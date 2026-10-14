@@ -1,0 +1,73 @@
+// File: ko/test-mmap.c
+// Created by Andrea "Nemesi" Cocito on 14/10/2026
+// Mounted-file mmap protection, tail, lifetime and EOF regression probe.
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#ifdef __FreeBSD__
+#include <sys/mount.h>
+#endif
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static void bus(int sig) { (void)sig; _exit(0); }
+int main(int argc, char **argv)
+{
+    struct stat st, expected;
+    int fd, ef, kind, status;
+    long page = sysconf(_SC_PAGESIZE);
+    size_t length;
+    unsigned char *bytes, *p;
+    pid_t child;
+    assert(argc == 4);
+    fd = open(argv[1], O_RDONLY); ef = open(argv[2], O_RDONLY);
+    assert(fd >= 0 && ef >= 0 && !fstat(fd, &st) && !fstat(ef, &expected));
+    length = ((size_t)st.st_size + page - 1) / page * page;
+    bytes = malloc(length ? length : 1);
+    assert(expected.st_size == (off_t)length);
+    assert(read(ef, bytes, length) == (ssize_t)length);
+    close(ef);
+#ifdef __FreeBSD__
+    assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED));
+    assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
+#endif
+    for (kind = 0; kind < 2; kind++) {
+        int flags = kind ? MAP_PRIVATE : MAP_SHARED;
+        assert(mmap(NULL, page, PROT_READ | PROT_WRITE, flags, fd, 0) == MAP_FAILED);
+        if (!length) continue;
+        p = mmap(NULL, length, PROT_READ, flags, fd, 0);
+        assert(p != MAP_FAILED && (uintptr_t)p % page == 0);
+        assert(!memcmp(p, bytes, length));
+        assert(mprotect(p, length, PROT_READ | PROT_WRITE) == -1);
+        assert(!memcmp(p, bytes, length));
+        assert(!munmap(p, length));
+    }
+    p = mmap(NULL, length + page, PROT_READ, MAP_SHARED, fd, 0);
+    assert(p != MAP_FAILED);
+    close(fd);
+    if (length) assert(!memcmp(p, bytes, length));
+#ifdef __FreeBSD__
+    errno = 0;
+    assert(unmount(argv[3], 0) == -1 && errno == EBUSY);
+#endif
+    child = fork();
+    assert(child >= 0);
+    if (!child) {
+        signal(SIGBUS, bus);
+        (void)*(volatile unsigned char *)(p + length);
+        _exit(1);
+    }
+    assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(!munmap(p, length + page));
+    free(bytes);
+    puts("mmap bytes, tails, protections, descriptor lifetime and EOF: passed");
+    return 0;
+}
+// END File: ko/test-mmap.c

@@ -4,6 +4,7 @@
 #ifdef _KERNEL
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/errno.h>
 MALLOC_DEFINE(M_FFIMAGE, "femtofs image", "femtofs decoded metadata");
