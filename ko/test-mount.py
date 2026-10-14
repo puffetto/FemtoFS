@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import pwd
 import shutil
+import socket
 import stat
 import struct
 import subprocess
@@ -25,6 +26,8 @@ base = Path(tempfile.mkdtemp(prefix='ko-mount.', dir=work))
 source, mountpoint = base / 'source', base / 'mount'
 source.mkdir(mode=0o755); mountpoint.mkdir()
 base.chmod(0o755)
+shutil.copyfile('/bin/echo', source/'echo')
+(source/'echo').chmod(0o755)
 for size in (0, 1, 4095, 4096, 4097, 8192, 10000):
     p = source / f'file-{size}'
     p.write_bytes(bytes(i % 251 + 1 for i in range(size)))
@@ -127,6 +130,14 @@ try:
                 seen += 1
             assert (mountpoint/'hardlink').stat().st_ino == (mountpoint/'file-4097').stat().st_ino
             assert (mountpoint/'symlink').read_bytes() == (source/'file-4097').read_bytes()
+            assert subprocess.check_output([str(mountpoint/'echo'), 'femtofs exec']) == b'femtofs exec\n'
+            with (mountpoint/'file-10000').open('rb') as f:
+                sender, receiver = socket.socketpair()
+                try:
+                    assert os.sendfile(f.fileno(), sender.fileno(), 0, 10000) == 10000
+                    assert receiver.recv(10001) == (source/'file-10000').read_bytes()
+                finally:
+                    sender.close(); receiver.close()
             assert (mountpoint/'entry-000').stat().st_ino != (mountpoint/'entry-001').stat().st_ino
             nobody = pwd.getpwnam('nobody')
             def unprivileged():
