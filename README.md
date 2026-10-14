@@ -219,10 +219,15 @@ visibility split behavior, and packing overhead.
 
 The portable `makefemtofs` suite covers construction, specification-derived
 output checks, boundary cases, and deterministic publication/device-commit
-fault injection, and has been run under ASan/UBSan. Coverage is not exhaustive:
-FreeBSD provider/mount/mmap verification and coverage-guided fuzz campaigns
-remain pending. See [the coverage matrix](tmp/REVIEW-coverage.md) for the
-verified cases, opt-in test builds, and remaining gaps.
+fault injection, and passes on macOS and FreeBSD 15.1, including ASan/UBSan runs.
+
+The [kernel module](ko/README.md) targets FreeBSD 15.1 with `clean` and `leaking`
+modes; 14.x compatibility and `dirty` mode are deferred. Native tests cover
+provider I/O, mounted metadata and permissions, name lookup, FIFOs, and mmap
+contents, protection and page sharing. The initial module keeps an image-sized
+wired snapshot. FreeBSD's normalization of original mmap offsets remains a
+documented contract limitation. See the module documentation and
+[coverage matrix](tmp/REVIEW-coverage.md) for commands and remaining gaps.
 
 Image construction is offline work. Its efficiency matters, but deterministic
 output, safe publication, mounted lookup performance, and final image size have
