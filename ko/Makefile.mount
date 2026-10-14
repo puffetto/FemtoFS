@@ -1,0 +1,8 @@
+# File: ko/Makefile.mount
+# Created by Andrea "Nemesi" Cocito on 14/10/2026
+# FreeBSD mount helper build.
+PROG= mount_femtofs
+SRCS= mount_femtofs.c
+MAN=
+.include <bsd.prog.mk>
+# END File: ko/Makefile.mount

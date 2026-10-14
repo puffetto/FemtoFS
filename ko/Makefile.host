@@ -1,0 +1,12 @@
+# File: ko/Makefile.host
+# Created by Andrea "Nemesi" Cocito on 14/10/2026
+# Portable decoder build; invoke make -f ko/Makefile.host from the repository root.
+CC ?= cc
+BUILD ?= tmp/ko-host
+CFLAGS ?= -O1 -g -Wall -Wextra -Werror -std=c11
+all: $(BUILD)/check-image
+$(BUILD)/check-image: ko/image.c ko/image.h ko/check-image.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) ko/image.c ko/check-image.c -o $@
+.PHONY: all
+# END File: ko/Makefile.host
