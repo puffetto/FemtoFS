@@ -38,8 +38,8 @@
 #include <machine/atomic.h>
 #include "image.h"
 
-#if __FreeBSD_version < 1501000 || __FreeBSD_version >= 1502000
-#error "This module targets FreeBSD 15.1"
+#if __FreeBSD_version < 1501000 || __FreeBSD_version >= 1600000
+#error "This module requires FreeBSD 15.1 or later within FreeBSD 15.x"
 #endif
 
 static MALLOC_DEFINE(M_FEMTOFS, "femtofs", "femtofs mount and vnode data");

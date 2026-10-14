@@ -1,6 +1,7 @@
 # FreeBSD module
 
-The initial target is FreeBSD 15.1. FreeBSD 14.x and `dirty` mode are deferred.
+The build guard accepts FreeBSD 15.1 and later within 15.x; runtime verification
+currently covers 15.1. FreeBSD 14.x and `dirty` mode are deferred.
 The on-disk contract is [specification.md](../specification.md).
 
 Build the portable decoder and run its regressions locally, from the repository root:
