@@ -59,6 +59,17 @@ for i in range(rootsize):
 unit = None
 mounted = False
 try:
+    empty = base / 'empty'
+    empty.mkdir()
+    empty_image = base / 'empty.img'
+    run(builder, '--temp-dir', base, empty, empty_image)
+    unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(empty_image)]).decode().strip()
+    assert unit.startswith('md') and unit[2:].isdigit()
+    run(helper, '/dev/'+unit, mountpoint); mounted = True
+    assert list(mountpoint.iterdir()) == [] and mountpoint.stat().st_nlink == 2
+    run('umount', mountpoint); mounted = False
+    run('mdconfig', '-d', '-u', unit); unit = None
+    print('empty root mounted with default clean mode', flush=True)
     # Real mount rejection must release GEOM and allocation state each time.
     malformed = []
     for byteoff in (0, 5, 7, 12, 67, 72):
@@ -115,6 +126,7 @@ try:
                     assert sorted(p.name for p in target.iterdir()) == sorted(p.name for p in original.iterdir())
                 seen += 1
             assert (mountpoint/'hardlink').stat().st_ino == (mountpoint/'file-4097').stat().st_ino
+            assert (mountpoint/'symlink').read_bytes() == (source/'file-4097').read_bytes()
             assert (mountpoint/'entry-000').stat().st_ino != (mountpoint/'entry-001').stat().st_ino
             nobody = pwd.getpwnam('nobody')
             def unprivileged():

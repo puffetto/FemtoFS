@@ -80,6 +80,14 @@ class Images(unittest.TestCase):
     def test_valid_tree_and_pages(self):
         self.check(self.good, valid=True)
 
+    def test_empty_root(self):
+        directory = self.base / 'empty-root'
+        directory.mkdir()
+        output = self.base / 'empty.img'
+        subprocess.run([BUILDER, '--temp-dir', str(self.base), str(directory), str(output)],
+                       check=True, capture_output=True)
+        self.check(output.read_bytes(), valid=True)
+
     def test_future_revision(self):
         b = bytearray(self.good)
         b[6] = 7
