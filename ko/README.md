@@ -62,3 +62,35 @@ an explicit scope exception; it is not claimed as implemented here.
 
 Kernel compilation and mounted integration results are recorded in the local
 `tmp/REVIEW-execution.md`; portable tests alone do not establish kernel correctness.
+
+To run the disposable-provider mount matrix after loading the module:
+
+```sh
+cc -Wall -Wextra -Werror -g ko/test-mmap.c -o tmp/ko-native/test-mmap
+cc -Wall -Wextra -Werror -g ko/test-directory.c -o tmp/ko-native/test-directory
+sudo python3 ko/test-mount.py tmp/ko-build/makefemtofs \
+  tmp/ko-native/mount_femtofs tmp/ko-native/test-mmap tmp
+sudo kldunload femtofs
+```
+
+The harness verifies both mount modes at 512/4096-byte provider sectors, malformed
+mount rejection, mounted-provider overwrite refusal, directory cookies, metadata,
+unprivileged access, hardlinks, FIFO traffic, concurrent lookups, and mmap page
+contents, read-only protections, closed-descriptor lifetime and EOF faults. Pager
+counters check actual direct-page use and sharing of clean copies. All providers
+and mounts belong to the test; cleanup failure retains backing files.
+
+The decoder can also run under coverage-guided fuzzing:
+
+```sh
+cc -O1 -g -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
+  ko/image.c ko/fuzz-image.c -o tmp/ko-native/fuzz-image
+# Place valid images from makefemtofs in the corpus first.
+mkdir -p tmp/ko-fuzz-images tmp/ko-fuzz-artifacts
+tmp/ko-native/fuzz-image -seed=20261014 -max_len=1048576 -max_total_time=600 \
+  -artifact_prefix=tmp/ko-fuzz-artifacts/ tmp/ko-fuzz-images
+```
+
+NFS export and forced unmount are not supported by this initial module. Native
+runtime coverage currently targets amd64 with 4096-byte VM pages; alternate VM
+page sizes have portable policy tests, not kernel execution evidence.

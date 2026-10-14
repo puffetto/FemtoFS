@@ -60,17 +60,32 @@ unit = None
 mounted = False
 try:
     # Real mount rejection must release GEOM and allocation state each time.
+    malformed = []
     for byteoff in (0, 5, 7, 12, 67, 72):
         corrupt = bytearray(raw)
         corrupt[byteoff] ^= 128
+        malformed.append(corrupt)
+    first_bucket = next(128+(root+i)*16 for i in range(rootsize) if 1 <= raw[128+(root+i)*16] <= 5)
+    root_attr = 128 + struct.unpack_from('<H', raw, 64)[0]*16
+    for off, value in ((first_bucket+4, 65535), (first_bucket+8, 0),
+                       (first_bucket+12, (first_bucket-128)//16-root),
+                       (root_attr+12, 4)):
+        corrupt = bytearray(raw)
+        struct.pack_into('<I', corrupt, off, value)
+        checksum = 0x811c9dc5
+        for byte in corrupt[128:128+u32(48)]:
+            checksum = ((checksum*0x01000193) & 0xffffffff) ^ byte
+        struct.pack_into('<I', corrupt, 12, checksum)
+        malformed.append(corrupt)
+    for index, corrupt in enumerate(malformed):
         damaged = base / 'damaged'
         damaged.write_bytes(corrupt)
         unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(damaged)]).decode().strip()
         assert unit.startswith('md') and unit[2:].isdigit()
         result = subprocess.run([str(helper), '/dev/'+unit, str(mountpoint)], capture_output=True)
-        assert result.returncode != 0, f'corrupted header {byteoff} mounted'
+        assert result.returncode != 0, f'corrupted image {index} mounted'
         run('mdconfig', '-d', '-u', unit); unit = None
-    print('six malformed-image mounts rejected and providers detached', flush=True)
+    print(f'{len(malformed)} malformed-image mounts rejected and providers detached', flush=True)
     for sector in (512, 4096):
         unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(image), '-S', str(sector)]).decode().strip()
         assert unit.startswith('md') and unit[2:].isdigit()

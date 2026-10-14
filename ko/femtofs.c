@@ -112,7 +112,8 @@ static int ff_read(struct vop_read_args *ap)
 static int ff_readlink(struct vop_readlink_args *ap)
 {
     struct ff_node *n = NODE(ap->a_vp);
-    return uiomove(__DECONST(uint8_t *, FN(ap->a_vp)->fs->image.bytes) + n->off, n->size, ap->a_uio);
+    return uiomove(__DECONST(uint8_t *, FN(ap->a_vp)->fs->image.bytes) + n->off,
+        MIN(MIN((uint64_t)ap->a_uio->uio_resid, INT_MAX), n->size), ap->a_uio);
 }
 static int ff_parent(struct mount *mp, void *arg, int flags, struct vnode **vpp)
 { return ff_vget(mp, *(ino_t *)arg, flags, vpp); }
