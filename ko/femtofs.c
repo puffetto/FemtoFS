@@ -193,6 +193,13 @@ static int ff_reclaim(struct vop_reclaim_args *ap)
     return 0;
 }
 static int ff_setattr(struct vop_setattr_args *ap) { (void)ap; return EROFS; }
+static int ff_bmap(struct vop_bmap_args *ap)
+{
+    /* haspage consumes these even when selecting the VOP_READ fallback. */
+    if (ap->a_runp) *ap->a_runp = 0;
+    if (ap->a_runb) *ap->a_runb = 0;
+    return EOPNOTSUPP;
+}
 static int ff_getpages_async(struct vop_getpages_async_args *ap)
 {
     /* The resident snapshot completes synchronously, including sendfile's callback. */
@@ -418,7 +425,7 @@ static struct vop_vector ff_vops = {
     .vop_reclaim = ff_reclaim, .vop_inactive = VOP_NULL,
     .vop_getpages = vnode_pager_local_getpages,
     .vop_getpages_async = ff_getpages_async,
-    .vop_bmap = VOP_EOPNOTSUPP, /* Select the generic pager's VOP_READ fallback. */
+    .vop_bmap = ff_bmap,
     .vop_setattr = ff_setattr, .vop_pathconf = vop_stdpathconf,
     .vop_advise = VOP_NULL, /* The immutable snapshot is already resident. */
 };
