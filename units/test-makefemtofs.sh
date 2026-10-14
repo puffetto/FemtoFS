@@ -44,7 +44,7 @@ do
     : > "$case_dir/hard-hash/$name"
 done < "$(dirname "$0")/dual-hash-names.txt"
 "$builder" --temp-dir "$case_dir" --uuid "$uuid" "$case_dir/hard-hash" "$case_dir/hard-hash.img"
-root_hash_control=$(od -An -tu1 -j 66 -N 1 "$case_dir/hard-hash.img")
+root_hash_control=$(od -An -tu1 -j 66 -N 1 "$case_dir/hard-hash.img" | tr -d '[:space:]')
 test $((root_hash_control >> 6)) -eq 1
 hash2_bytes=$(od -An -tx1 -j 68 -N 4 "$case_dir/hard-hash.img" | tr -d ' \n')
 test "$hash2_bytes" != 00000000
