@@ -18,22 +18,22 @@
 #include <sys/namei.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
+#include <sys/rwlock.h>
 #include <sys/stat.h>
 #include <sys/sx.h>
 #include <sys/vnode.h>
 #include <geom/geom.h>
 #include <geom/geom_vfs.h>
 #include <vm/vm.h>
+#include <vm/pmap.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_map.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
 #include <vm/vm_pager.h>
 #include <vm/vnode_pager.h>
-#include <vm/pmap.h>
 #include <security/mac/mac_framework.h>
 #include "image.h"
-#include "vnode_if.h"
 
 #if __FreeBSD_version < 1501000 || __FreeBSD_version >= 1502000
 #error "This module targets FreeBSD 15.1"
