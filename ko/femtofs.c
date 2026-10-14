@@ -9,6 +9,7 @@
 #include <sys/fcntl.h>
 #include <sys/file.h>
 #include <sys/kernel.h>
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mman.h>
@@ -213,7 +214,7 @@ static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t
         if (!fs->clean[n->blob]) fs->clean[n->blob] = malloc(
             (size_t)howmany(n->size, PAGE_SIZE) * sizeof(vm_offset_t), M_FEMTOFS, M_WAITOK | M_ZERO);
         if (!fs->clean[n->blob][index]) {
-            fs->clean[n->blob][index] = kmem_malloc(PAGE_SIZE, M_WAITOK | M_ZERO);
+            fs->clean[n->blob][index] = (vm_offset_t)kmem_malloc(PAGE_SIZE, M_WAITOK | M_ZERO);
             memcpy((void *)fs->clean[n->blob][index], (void *)address, copied);
         }
         address = fs->clean[n->blob][index];
@@ -299,12 +300,12 @@ static void ff_free(struct ff_mount *fs)
     if (fs->clean) {
         for (i = 0; i < fs->image.nblobs; i++) if (fs->clean[i]) {
             for (j = 0; j < howmany(fs->image.blobs[i].size, PAGE_SIZE); j++)
-                if (fs->clean[i][j]) kmem_free(fs->clean[i][j], PAGE_SIZE);
+                if (fs->clean[i][j]) kmem_free((void *)fs->clean[i][j], PAGE_SIZE);
             free(fs->clean[i], M_FEMTOFS);
         }
         free(fs->clean, M_FEMTOFS);
     }
-    if (fs->image.bytes) kmem_free((vm_offset_t)fs->image.bytes, round_page(fs->image.size));
+    if (fs->image.bytes) kmem_free(__DECONST(uint8_t *, fs->image.bytes), round_page(fs->image.size));
     ff_destroy(&fs->image);
     if (fs->consumer) {
         g_topology_lock(); g_vfs_close(fs->consumer); g_topology_unlock();
