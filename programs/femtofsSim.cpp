@@ -3,6 +3,7 @@
 // Estimate femtoFS 0x0100 metadata, hashing, packing, and mmap behavior.
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -50,6 +51,7 @@ struct HashChoice {
     uint32_t empties = 0;
     bool hitCeiling = false;
     uint32_t ceiling = 0;
+    bool dual = false;
 };
 
 struct PackingStats {
@@ -123,18 +125,39 @@ struct MixedDualHashResult {
     HashSimulationSummary summary;
     uint64_t hardDirectories = 0;
     uint64_t hardEntries = 0;
-    double unsuccessfulOneProbe = 0.0;
-    double unsuccessfulTwoProbe = 0.0;
+    long double missScore = 0.0L; // Same parameter-selection proxy as the builder.
 };
 
-std::string normalizePath(const std::string& raw) {
-    if (raw == "./") {
-        return "";
+std::string normalizePath(std::string path, bool directory) {
+    if (path.find('\0') != std::string::npos || (!path.empty() && path.front() == '/')) {
+        throw std::runtime_error("invalid pathname: " + path);
     }
-    if (raw.rfind("./", 0) == 0) {
-        return raw.substr(2);
+    if (directory) {
+        while (path.size() > 1 && path.back() == '/')
+            path.pop_back();
+    } else if (!path.empty() && path.back() == '/') {
+        throw std::runtime_error("non-directory pathname has a trailing slash: " + path);
     }
-    return raw;
+    while (path == "." || path.rfind("./", 0) == 0) {
+        if (path == ".") {
+            path.clear();
+            break;
+        }
+        path.erase(0, 2);
+    }
+    if (path.empty() && !directory)
+        throw std::runtime_error("non-directory pathname maps to root");
+    for (size_t start = 0; start < path.size();) {
+        const size_t slash = path.find('/', start);
+        const size_t end = slash == std::string::npos ? path.size() : slash;
+        const std::string_view component(path.data() + start, end - start);
+        if (component.empty() || component == "." || component == ".." ||
+            component.size() > 255) {
+            throw std::runtime_error("invalid pathname component: " + path);
+        }
+        start = end + 1;
+    }
+    return path;
 }
 
 std::pair<std::string, std::string> splitParentName(const std::string& path) {
@@ -176,7 +199,7 @@ bool parseFindLsLine(const std::string& line, FsEntry& out) {
         }
     }
 
-    e.path = normalizePath(pathField);
+    e.path = normalizePath(std::move(pathField), e.type == 'd');
     const auto [parent, name] = splitParentName(e.path);
     e.parent = parent;
     e.name = name;
@@ -222,6 +245,7 @@ HashChoice simulationChoice(const femtofs::hashplan::Choice& choice,
     out.empties = choice.tableSize - entries;
     out.hitCeiling = choice.hitCeiling;
     out.ceiling = choice.ceiling;
+    out.dual = choice.dual;
     return out;
 }
 
@@ -500,9 +524,6 @@ MixedDualHashResult simulateHashingMixedDualHash(
     MixedDualHashResult out;
     out.summary.dirs.reserve(directories.size());
 
-    long double weightedOne = 0.0L;
-    long double weightedTwo = 0.0L;
-
     for (const auto& d : directories) {
         const auto& names = dirChildren.at(d);
         const uint32_t n = static_cast<uint32_t>(names.size());
@@ -550,8 +571,7 @@ MixedDualHashResult simulateHashingMixedDualHash(
             const long double nl = static_cast<long double>(n);
             const long double tl = static_cast<long double>(hc.tablesize);
             const long double unit = (nl * nl) / tl;
-            weightedOne += unit;
-            weightedTwo += useDual ? (2.0L * unit) : unit;
+            out.missScore += useDual ? (2.0L * unit) : unit;
         }
     }
 
@@ -564,12 +584,6 @@ MixedDualHashResult simulateHashingMixedDualHash(
         }
         return a.n > b.n;
     });
-
-    if (out.summary.totalDirEntries > 0) {
-        const long double denom = static_cast<long double>(out.summary.totalDirEntries);
-        out.unsuccessfulOneProbe = static_cast<double>(weightedOne / denom);
-        out.unsuccessfulTwoProbe = static_cast<double>(weightedTwo / denom);
-    }
 
     return out;
 }
@@ -927,13 +941,81 @@ double weightedMeanSquare(const HashSimulationSummary& summary) {
         : static_cast<double>(summary.totalSumSquares) / static_cast<double>(summary.totalDirEntries);
 }
 
-double averageSuccessfulLookupStrcmp(const HashSimulationSummary& summary) {
-    if (summary.totalDirEntries == 0) {
-        return 0.0;
+struct LookupStats {
+    uint64_t comparisons = 0;
+    uint64_t oneComparison = 0;
+    uint64_t maxComparisons = 0;
+    double average = 0.0;
+};
+
+LookupStats replayLookups(const HashSimulationSummary& summary,
+                         const std::unordered_map<std::string, std::vector<std::string>>& dirChildren,
+                         uint32_t secondBase = 0) {
+    LookupStats stats;
+    for (const DirReport& dir : summary.dirs) {
+        const auto& names = dirChildren.at(dir.path == "/" ? "" : dir.path);
+        const HashChoice& choice = dir.choice;
+        if (names.empty())
+            continue;
+
+        // Reserve assigned anchors, then place overflow cells in index order,
+        // matching the builder's coalesced chains over the sorted names.
+        std::vector<std::vector<size_t>> groups(choice.tablesize);
+        for (size_t i = 0; i < names.size(); ++i) {
+            const uint32_t h1 = femtofs::hashName(names[i], choice.p, choice.tablesize);
+            const uint32_t h2 = choice.dual ?
+                femtofs::hashName(names[i], secondBase, choice.tablesize) : h1;
+            const uint32_t anchor = groups[h2].size() < groups[h1].size() ||
+                (groups[h2].size() == groups[h1].size() && h2 < h1) ? h2 : h1;
+            groups[anchor].push_back(i);
+        }
+        std::vector<size_t> objectAt(choice.tablesize, names.size());
+        std::vector<uint32_t> next(choice.tablesize, choice.tablesize);
+        uint32_t overflow = 0;
+        for (uint32_t anchor = 0; anchor < choice.tablesize; ++anchor) {
+            uint32_t previous = choice.tablesize;
+            for (const size_t object : groups[anchor]) {
+                uint32_t position = anchor;
+                if (previous != choice.tablesize) {
+                    while (!groups[overflow].empty())
+                        ++overflow;
+                    position = overflow++;
+                    next[previous] = position;
+                }
+                objectAt[position] = object;
+                previous = position;
+            }
+        }
+
+        for (size_t i = 0; i < names.size(); ++i) {
+            const uint32_t h1 = femtofs::hashName(names[i], choice.p, choice.tablesize);
+            const uint32_t h2 = choice.dual ?
+                femtofs::hashName(names[i], secondBase, choice.tablesize) : h1;
+            const std::array<uint32_t, 2> anchors{h1, h2};
+            const size_t anchorCount = h1 == h2 ? 1 : 2;
+            uint64_t comparisons = 0;
+            bool found = false;
+            for (size_t a = 0; a < anchorCount && !found; ++a) {
+                uint32_t current = anchors[a];
+                while (current != choice.tablesize && objectAt[current] != names.size()) {
+                    ++comparisons;
+                    if (objectAt[current] == i) {
+                        found = true;
+                        break;
+                    }
+                    current = next[current];
+                }
+            }
+            if (!found)
+                throw std::runtime_error("lookup replay could not reach an entry in " + dir.path);
+            stats.comparisons += comparisons;
+            stats.oneComparison += comparisons == 1;
+            stats.maxComparisons = std::max(stats.maxComparisons, comparisons);
+        }
     }
-    const double n = static_cast<double>(summary.totalDirEntries);
-    const double sumSquares = static_cast<double>(summary.totalSumSquares);
-    return (sumSquares + n) / (2.0 * n);
+    if (summary.totalDirEntries != 0)
+        stats.average = static_cast<double>(stats.comparisons) / summary.totalDirEntries;
+    return stats;
 }
 
 double averageUnsuccessfulLookupStrcmp(const HashSimulationSummary& summary) {
@@ -947,8 +1029,12 @@ double averageUnsuccessfulLookupStrcmp(const HashSimulationSummary& summary) {
         }
         const long double n = static_cast<long double>(dir.n);
         const long double t = static_cast<long double>(dir.choice.tablesize);
-        // Entry-weighted directory selection, then uniform hash bucket in dir.
-        weighted += (n * n) / t;
+        // Every occupied cell can be a query anchor, including an overflow
+        // cell. A chain of length L contributes L*(L+1)/2 comparisons over
+        // all its starting cells. Independent uniform dual anchors coincide
+        // with probability 1/t; lookup probes that anchor only once.
+        const long double oneProbe = (dir.choice.sumSquares + n) / (2.0L * t);
+        weighted += n * oneProbe * (dir.choice.dual ? 2.0L - 1.0L / t : 1.0L);
     }
     return static_cast<double>(weighted / static_cast<long double>(summary.totalDirEntries));
 }
@@ -1078,14 +1164,12 @@ uint32_t pageFormatCode(uint32_t pageSize) {
 }
 
 bool encodedBlobBytes(uint64_t announcedBytes, uint32_t* outEncodedBytes) {
-    if (outEncodedBytes == nullptr) {
+    if (outEncodedBytes == nullptr ||
+        announcedBytes > std::numeric_limits<uint32_t>::max() - kBlobWord) {
         return false;
     }
     const uint64_t withTerminator = announcedBytes + 1u;
     const uint64_t encoded = (withTerminator + (kBlobWord - 1u)) & ~(static_cast<uint64_t>(kBlobWord) - 1u);
-    if (encoded > std::numeric_limits<uint32_t>::max()) {
-        return false;
-    }
     *outEncodedBytes = static_cast<uint32_t>(encoded);
     return true;
 }
@@ -1125,7 +1209,15 @@ int main(int argc, char** argv) {
     std::unordered_map<std::string, const FsEntry*> entryByPath;
     entryByPath.reserve(entries.size());
     for (const auto& e : entries) {
-        entryByPath[e.path] = &e;
+        if (!entryByPath.emplace(e.path, &e).second)
+            throw std::runtime_error("duplicate pathname: " + e.path);
+    }
+    for (const auto& e : entries) {
+        if (e.path.empty())
+            continue;
+        const auto parent = entryByPath.find(e.parent);
+        if (parent == entryByPath.end() || parent->second->type != 'd')
+            throw std::runtime_error("missing or non-directory parent for: " + e.path);
     }
 
     std::unordered_map<std::string, bool> publicSearchableDirectoryByPath;
@@ -1318,6 +1410,13 @@ int main(int argc, char** argv) {
     for (const auto& d : directories) {
         (void)dirChildren[d];
     }
+    for (auto& [directory, names] : dirChildren) {
+        (void)directory;
+        std::sort(names.begin(), names.end(), [](const std::string& lhs, const std::string& rhs) {
+            return std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                [](unsigned char left, unsigned char right) { return left < right; });
+        });
+    }
 
     uint64_t fileObjectCount = filePayloadByInode.size();
     uint64_t fifoObjectCount = fifoPathCountByInode.size();
@@ -1381,7 +1480,7 @@ int main(int argc, char** argv) {
 
     const HashSimulationSummary baseline = simulateHashing(directories, dirChildren, smallPrimes);
     const double baselineWeightedMeanSquare = weightedMeanSquare(baseline);
-    const double baselineAvgSuccessfulLookupStrcmp = averageSuccessfulLookupStrcmp(baseline);
+    const double baselineAvgSuccessfulLookupStrcmp = replayLookups(baseline, dirChildren).average;
     const double baselineAvgUnsuccessfulLookupStrcmp = averageUnsuccessfulLookupStrcmp(baseline);
     const double baselineGlobalLoadFactor = globalLoadFactor(baseline);
 
@@ -1432,8 +1531,8 @@ int main(int argc, char** argv) {
             if (sa.totalBuckets != sb.totalBuckets) {
                 return sa.totalBuckets < sb.totalBuckets;
             }
-            if (a.result.unsuccessfulTwoProbe != b.result.unsuccessfulTwoProbe) {
-                return a.result.unsuccessfulTwoProbe < b.result.unsuccessfulTwoProbe;
+            if (a.result.missScore != b.result.missScore) {
+                return a.result.missScore < b.result.missScore;
             }
             return a.p2 < b.p2;
         });
@@ -1466,10 +1565,10 @@ int main(int argc, char** argv) {
     }
     const bool selectedMixed = bestMixed != nullptr && !hashBudgetFallback;
     const double selectedWeightedMeanSquare = weightedMeanSquare(selectedSummary);
-    const double selectedAvgSuccessfulLookupStrcmp = averageSuccessfulLookupStrcmp(selectedSummary);
-    const double selectedAvgUnsuccessfulLookupStrcmp = selectedMixed ?
-        bestMixed->result.unsuccessfulTwoProbe :
-        averageUnsuccessfulLookupStrcmp(selectedSummary);
+    const LookupStats selectedLookups = replayLookups(
+        selectedSummary, dirChildren, selectedMixed ? bestMixed->p2 : 0);
+    const double selectedAvgSuccessfulLookupStrcmp = selectedLookups.average;
+    const double selectedAvgUnsuccessfulLookupStrcmp = averageUnsuccessfulLookupStrcmp(selectedSummary);
     const double selectedGlobalLoadFactor = globalLoadFactor(selectedSummary);
     const uint64_t filelikeRoleCount = fileObjectCount + symlinkObjectCount + fifoObjectCount;
     const uint64_t dirRoleCount = dirObjectCount;
@@ -1730,6 +1829,10 @@ int main(int argc, char** argv) {
     std::cout << "  weighted mean-square chain:   " << std::fixed << std::setprecision(4) << selectedWeightedMeanSquare << "\n";
     std::cout << "  avg strcmp per successful lookup: " << std::fixed << std::setprecision(4)
               << selectedAvgSuccessfulLookupStrcmp << "\n";
+    std::cout << "  successful lookup comparisons: " << selectedLookups.comparisons << "\n";
+    std::cout << "  lookups with one comparison:   " << selectedLookups.oneComparison
+              << " / " << selectedSummary.totalDirEntries << "\n";
+    std::cout << "  max comparisons per lookup:    " << selectedLookups.maxComparisons << "\n";
     std::cout << "  avg strcmp per unsuccessful lookup: " << std::fixed << std::setprecision(4)
               << selectedAvgUnsuccessfulLookupStrcmp << "\n";
     std::cout << "  perfect-hash dirs (score=1):  " << selectedSummary.dirsPerfect << "\n";
@@ -1748,7 +1851,7 @@ int main(int argc, char** argv) {
     if (bestMixed != nullptr) {
         const auto& bestSummary = bestMixed->result.summary;
         const double bestWeightedMeanSquare = weightedMeanSquare(bestSummary);
-        const double bestAvgSuccessfulLookupStrcmp = averageSuccessfulLookupStrcmp(bestSummary);
+        const double bestAvgSuccessfulLookupStrcmp = replayLookups(bestSummary, dirChildren, bestMixed->p2).average;
         const double bestGlobalLoadFactor = globalLoadFactor(bestSummary);
         const int64_t deltaBuckets = static_cast<int64_t>(bestSummary.totalBuckets) - static_cast<int64_t>(baseline.totalBuckets);
         const int64_t deltaMetaBytes = deltaBuckets * femtofs::kCellSize;
@@ -1778,13 +1881,12 @@ int main(int argc, char** argv) {
                   << " (baseline " << baselineGlobalLoadFactor << ")\n";
         std::cout << "  avg strcmp successful:        " << std::fixed << std::setprecision(4) << bestAvgSuccessfulLookupStrcmp
                   << " (baseline " << baselineAvgSuccessfulLookupStrcmp << ")\n";
-        std::cout << "  avg strcmp unsuccessful (1 probe model): " << std::fixed << std::setprecision(4)
-                  << bestMixed->result.unsuccessfulOneProbe << " (baseline " << baselineAvgUnsuccessfulLookupStrcmp << ")\n";
-        std::cout << "  avg strcmp unsuccessful (2 probe-on-hard model): " << std::fixed << std::setprecision(4)
-                  << bestMixed->result.unsuccessfulTwoProbe << "\n";
+        std::cout << "  avg strcmp unsuccessful (uniform anchors): " << std::fixed << std::setprecision(4)
+                  << averageUnsuccessfulLookupStrcmp(bestSummary)
+                  << " (baseline " << baselineAvgUnsuccessfulLookupStrcmp << ")\n";
 
         std::cout << "  top random-prime candidates\n";
-        std::cout << "    hash2_base | max_chain | weighted_ms | buckets | miss_2probe_hard\n";
+        std::cout << "    hash2_base | max_chain | weighted_ms | buckets | miss_uniform_anchors\n";
         for (size_t i = 0; i < std::min<size_t>(5, mixedTrials.size()); ++i) {
             const auto& t = mixedTrials[i];
             const auto& s = t.result.summary;
@@ -1792,7 +1894,7 @@ int main(int argc, char** argv) {
                       << " | " << s.globalMaxChain
                       << " | " << std::fixed << std::setprecision(4) << weightedMeanSquare(s)
                       << " | " << s.totalBuckets
-                      << " | " << std::fixed << std::setprecision(4) << t.result.unsuccessfulTwoProbe
+                      << " | " << std::fixed << std::setprecision(4) << averageUnsuccessfulLookupStrcmp(s)
                       << "\n";
         }
 
@@ -1843,7 +1945,7 @@ int main(int argc, char** argv) {
                 runBudgetedHashTuning(hashCandidateSets, budgetBuckets, options.budgetedTargetMaxChain);
 
             const double tunedWeightedMeanSquare = weightedMeanSquare(tuned.summary);
-            const double tunedAvgSuccessfulLookupStrcmp = averageSuccessfulLookupStrcmp(tuned.summary);
+            const double tunedAvgSuccessfulLookupStrcmp = replayLookups(tuned.summary, dirChildren).average;
             const double tunedAvgUnsuccessfulLookupStrcmp = averageUnsuccessfulLookupStrcmp(tuned.summary);
             const uint64_t usedBytes = tuned.usedBuckets * femtofs::kCellSize;
 
@@ -2123,7 +2225,8 @@ int main(int argc, char** argv) {
     std::cout << "  - therefore cross-visibility promotion of identical payload bytes may be under-modeled.\n";
     std::cout << "  - symlink targets are modeled as private-only blobs outside payload/filename shared dedup domain.\n";
     std::cout << "  - blob storage uses align_up(announced+1, 4) before page-packing simulation.\n";
-    std::cout << "  - directory hash quality is exact for names present in input list.\n";
+    std::cout << "  - successful lookup comparisons replay the builder's chains over byte-sorted names.\n";
+    std::cout << "  - misses use entry-weighted directories and independent uniform anchors, probing equal anchors once.\n";
     std::cout << "  - find -ls has no content offsets; mmap candidates count only alignment guaranteed by packing rules.\n";
 
     const bool formatLimitsExceeded = objectLimitExceeded ||

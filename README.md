@@ -30,9 +30,9 @@ It is built for:
   - `leaking`/`dirty`: only public-part neighboring bytes may be exposed
 
 That makes it a strong fit for base system payloads, installer media, rescue
-environments, embedded FreeBSD deployments, immutable appliances, VM images,
-and container-like distribution formats where correctness and startup latency
-matter more than write support.
+environments, embedded OS/firmeare deployments, immutable appliances, VM images,
+and container-like distribution formats, where correctness and startup latency
+matter and you do not need write support.
 
 ## What Makes It Different
 
@@ -172,7 +172,7 @@ Image footprint:
 
 Modeled directory lookup cost for newly accessed paths:
 - All averages below are entry-weighted over the same directory entries.
-- UFS (no `dirhash`, no namecache hit): linear scan, about **`n/2`**
+- UFS (no `dirhash`, no namecache hit): linear scan, about **`(n+1)/2`**
   `strcmp()` on success and **`n`** on miss in a directory with `n` entries
 - On this dataset (`N=4041` entries across `252` directories), using
   entry-weighted directory sizes: rough UFS expectation is
@@ -181,10 +181,11 @@ Modeled directory lookup cost for newly accessed paths:
   the current `makefemtofs` policy gives **4,807 / 4,041** `strcmp()` calls on
   successful lookups: **1.1896** per lookup. **3,322 / 4,041** lookups
   (**82.2074%**) finish after one `strcmp()`; the maximum stored chain length
-  is **2**.
+  is **2**, while a lookup can make up to **3** comparisons across both anchors.
 - Unsuccessful lookup cost depends on the queried names. Under the simulator's
-  uniform-hash model, the current builder-equivalent policy averages **0.7860**
-  `strcmp()` per miss.
+  independent uniform-anchor model, the current builder-equivalent policy
+  averages **0.8229** `strcmp()` per miss. This includes queries starting at
+  overflow buckets and probes equal anchors only once.
 - UFS `dirhash` and VFS namecache can materially change real results, especially
   for repeated lookups. The counts above do not establish wall-clock performance
   or general superiority for either filesystem.
@@ -216,10 +217,12 @@ format/filter supported by libarchive; the simulator in
 [programs/femtofsSim.cpp](programs/femtofsSim.cpp) explores hash selection,
 visibility split behavior, and packing overhead.
 
-Comprehensive validation of `makefemtofs`, including boundary,
-fault-injection, sanitizer, and fuzz testing, is planned future work. The
-current test suite covers core construction and verification flows but is not
-yet exhaustive.
+The portable `makefemtofs` suite covers construction, specification-derived
+output checks, boundary cases, and deterministic publication/device-commit
+fault injection, and has been run under ASan/UBSan. Coverage is not exhaustive:
+FreeBSD provider/mount/mmap verification and coverage-guided fuzz campaigns
+remain pending. See [the coverage matrix](tmp/REVIEW-coverage.md) for the
+verified cases, opt-in test builds, and remaining gaps.
 
 Image construction is offline work. Its efficiency matters, but deterministic
 output, safe publication, mounted lookup performance, and final image size have
@@ -235,6 +238,9 @@ Build with CMake:
 cmake -S . -B build
 cmake --build build
 ```
+
+The test build also needs Python 3 and libarchive's `tar`/`bsdtar` for the
+archive-format fixtures. Use `-DBUILD_TESTING=OFF` for a programs-only build.
 
 Or build the programs with BSD make:
 

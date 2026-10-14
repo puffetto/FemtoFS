@@ -2095,6 +2095,9 @@ void zeroImage(int fd, uint32_t imageSize, bool pageIo)
         writeImageAt(fd, zero, offset, pageIo);
 }
 
+void verifyImage(int fd, const ImagePlan& plan, const Spool& spool,
+                 const std::string& mode, bool pageIo);
+
 void writeImage(int fd, ImagePlan& plan, const Spool& spool, bool device)
 {
     zeroImage(fd, plan.imageSize, device);
@@ -2113,9 +2116,26 @@ void writeImage(int fd, ImagePlan& plan, const Spool& spool, bool device)
     std::array<uint8_t, kPageSize> firstPage{};
     readImageAt(fd, firstPage, 0, device);
     std::copy(plan.header.begin(), plan.header.end(), firstPage.begin());
-    writeImageAt(fd, firstPage, 0, device);
-    if (::fsync(fd) != 0)
-        throw Error(errnoText("flushing completed image"));
+    try {
+        writeImageAt(fd, firstPage, 0, device);
+        if (::fsync(fd) != 0)
+            throw Error(errnoText("flushing completed image"));
+    } catch (const Error& error) {
+        if (!device)
+            throw;
+        // A failed commit may already have written a valid header. Observe the
+        // provider without another write; readable bytes do not prove durability.
+        std::string observed;
+        try {
+            verifyImage(fd, plan, spool, "full", true);
+            observed = "current intended image passes full verification";
+        } catch (const Error& verificationError) {
+            observed = "current image could not be verified: " +
+                       std::string(verificationError.what());
+        }
+        throw Error(std::string(error.what()) + "; " + observed +
+                    "; persistence is uncertain");
+    }
 }
 
 void verifyBlob(int fd, const BlobClass& blob, const Spool& spool, bool pageIo)
@@ -2387,15 +2407,15 @@ void writeRegularOutput(const Options& options, ImagePlan& plan,
     bool published = false;
     try {
         writeImage(fd.get(), plan, spool, false);
-        if (::fchmod(fd.get(), 0644) != 0)
-            throw Error(errnoText("chmod temporary output", temporary.data()));
-        if (::fsync(fd.get()) != 0)
-            throw Error(errnoText("fsync temporary output", temporary.data()));
         FileDescriptor verification(::open(temporary.data(),
                                             O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
         if (verification.get() < 0)
             throw Error(errnoText("reopen temporary output", temporary.data()));
         verifyImage(verification.get(), plan, spool, options.verify, false);
+        if (::fchmod(fd.get(), 0644) != 0)
+            throw Error(errnoText("chmod temporary output", temporary.data()));
+        if (::fsync(fd.get()) != 0)
+            throw Error(errnoText("fsync temporary output", temporary.data()));
 
         // This recheck narrows, but cannot eliminate, the TOCTOU window. The
         // documented contract requires an immutable source throughout creation.

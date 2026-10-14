@@ -8,6 +8,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 
+option(FEMTOFS_SANITIZERS "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(FEMTOFS_FREEBSD_TESTS "Register privileged disposable-provider integration" OFF)
+option(FEMTOFS_FUZZING "Build bounded builder libFuzzer entry points" OFF)
+if (FEMTOFS_SANITIZERS)
+    if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR "Sanitizers require Clang or GCC")
+    endif ()
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer
+                        -fno-sanitize-recover=undefined)
+    add_link_options(-fsanitize=address,undefined)
+endif ()
+
 if (APPLE)
     list(PREPEND CMAKE_PREFIX_PATH
         "/opt/homebrew/opt/libarchive"
@@ -54,6 +66,17 @@ add_custom_target(run-femtofsSim
 
 if (BUILD_TESTING)
     add_subdirectory(units)
+    if (FEMTOFS_FREEBSD_TESTS)
+        add_test(NAME makefemtofs-freebsd-provider
+            COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/units/test-makefemtofs-freebsd.sh
+                    $<TARGET_FILE:makefemtofs> ${CMAKE_BINARY_DIR})
+        set_tests_properties(makefemtofs-freebsd-provider PROPERTIES
+            LABELS "freebsd;privileged" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endif ()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME makefemtofs-cli-boundaries
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/units/test-builder-cli.py
+                $<TARGET_FILE:makefemtofs> ${CMAKE_BINARY_DIR})
     add_test(
         NAME femtofsSim-format-accounting
         COMMAND /bin/sh
@@ -68,4 +91,30 @@ if (BUILD_TESTING)
             $<TARGET_FILE:makefemtofs>
             ${CMAKE_BINARY_DIR}
     )
+endif ()
+
+if (FEMTOFS_FUZZING)
+    if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "libFuzzer targets require Clang")
+    endif ()
+    include(CheckCXXSourceCompiles)
+    set(review_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fsanitize=fuzzer")
+    check_cxx_source_compiles("#include <cstddef>
+        extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, std::size_t) { return 0; }"
+        FEMTOFS_HAS_LIBFUZZER)
+    set(CMAKE_REQUIRED_FLAGS "${review_saved_required_flags}")
+    if (NOT FEMTOFS_HAS_LIBFUZZER)
+        message(FATAL_ERROR "The selected Clang has no usable libFuzzer runtime; select a complete LLVM toolchain")
+    endif ()
+    foreach(kind paths plan)
+        add_executable(fuzz-${kind} units/fuzz-makefemtofs.cpp)
+        target_include_directories(fuzz-${kind} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+        target_link_libraries(fuzz-${kind} PRIVATE LibArchive::LibArchive)
+        target_compile_definitions(fuzz-${kind} PRIVATE
+            REVIEW_FUZZ_${kind}=1 REVIEW_TEST_ROOT="${CMAKE_BINARY_DIR}")
+        target_compile_options(fuzz-${kind} PRIVATE -fsanitize=fuzzer,address,undefined
+            -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+        target_link_options(fuzz-${kind} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endforeach()
 endif ()

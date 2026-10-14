@@ -389,8 +389,8 @@ mixed policy:
    greater than two;
 3. test 100 `hash2_base` prime candidates using the fixed seed
    `0x0F5F2026`; and
-4. select by maximum chain, weighted score, bucket count, unsuccessful lookup
-   cost, then numeric prime value.
+4. select by maximum chain, weighted score, bucket count, a proxy for
+   unsuccessful lookup cost, then numeric prime value.
 
 A hard directory switches to dual mode only when the selected dual choice
 strictly improves its own `(maximum chain, sum of squared chain lengths)` pair
@@ -498,8 +498,8 @@ the immutable plan. A plan that fails its own validator is an internal error.
 
 ## 8. Safe output and publication
 
-The writer has a common `ImageSink` interface backed by positional writes and
-an explicit zero-range operation. The regular-file sink may issue arbitrary
+The writer uses shared positional-write functions and an explicit zero-range
+operation. The regular-file sink may issue arbitrary
 byte-range writes. The device sink initializes the image with complete zeroed
 4096-byte pages and services logical byte ranges with complete-page
 read/modify/write operations. Every device offset and I/O length is therefore
@@ -522,8 +522,10 @@ eliminate it. Source immutability for the complete construction interval is an
 explicit caller precondition, as described in **Blob spooling and exact
 deduplication**.
 
-An error removes only the private temporary output and leaves an existing
-destination untouched.
+Before publication, an error removes only the private temporary output and
+leaves an existing destination untouched. After publication, a parent-directory
+fsync failure reports an error with uncertain durability; it does not roll back
+the published image.
 
 For a device:
 
