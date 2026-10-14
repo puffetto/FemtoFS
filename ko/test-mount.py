@@ -7,6 +7,7 @@ import errno
 import os
 from pathlib import Path
 import platform
+import pwd
 import shutil
 import stat
 import struct
@@ -23,6 +24,7 @@ builder, helper, probe, work = [Path(p).resolve() for p in sys.argv[1:5]]
 base = Path(tempfile.mkdtemp(prefix='ko-mount.', dir=work))
 source, mountpoint = base / 'source', base / 'mount'
 source.mkdir(mode=0o755); mountpoint.mkdir()
+base.chmod(0o755)
 for size in (0, 1, 4095, 4096, 4097, 8192, 10000):
     p = source / f'file-{size}'
     p.write_bytes(bytes(i % 251 + 1 for i in range(size)))
@@ -57,6 +59,18 @@ for i in range(rootsize):
 unit = None
 mounted = False
 try:
+    # Real mount rejection must release GEOM and allocation state each time.
+    for byteoff in (0, 5, 7, 12, 67, 72):
+        corrupt = bytearray(raw)
+        corrupt[byteoff] ^= 128
+        damaged = base / 'damaged'
+        damaged.write_bytes(corrupt)
+        unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(damaged)]).decode().strip()
+        assert unit.startswith('md') and unit[2:].isdigit()
+        result = subprocess.run([str(helper), '/dev/'+unit, str(mountpoint)], capture_output=True)
+        assert result.returncode != 0, f'corrupted header {byteoff} mounted'
+        run('mdconfig', '-d', '-u', unit); unit = None
+    print('six malformed-image mounts rejected and providers detached', flush=True)
     for sector in (512, 4096):
         unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(image), '-S', str(sector)]).decode().strip()
         assert unit.startswith('md') and unit[2:].isdigit()
@@ -66,6 +80,7 @@ try:
         for mode in ('clean', 'leaking'):
             run(helper, '-o', mode, device, mountpoint)
             mounted = True
+            run(probe.with_name('test-directory'), mountpoint)
             seen = 0
             for original in [source, *source.rglob('*')]:
                 rel = original.relative_to(source)
@@ -83,6 +98,18 @@ try:
                 seen += 1
             assert (mountpoint/'hardlink').stat().st_ino == (mountpoint/'file-4097').stat().st_ino
             assert (mountpoint/'entry-000').stat().st_ino != (mountpoint/'entry-001').stat().st_ino
+            nobody = pwd.getpwnam('nobody')
+            def unprivileged():
+                os.setgroups([]); os.setgid(nobody.pw_gid); os.setuid(nobody.pw_uid)
+            run(sys.executable, '-c', '''
+import errno, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+assert (root/'file-1').read_bytes()
+for path in ('private', 'hidden/promoted'):
+    try: (root/path).read_bytes()
+    except OSError as e: assert e.errno == errno.EACCES
+    else: raise AssertionError('private path readable')
+''', mountpoint, preexec_fn=unprivileged)
             for action in (lambda: (mountpoint/'new').write_bytes(b'x'),
                            lambda: (mountpoint/'file-1').chmod(0o600),
                            lambda: (mountpoint/'file-1').unlink()):

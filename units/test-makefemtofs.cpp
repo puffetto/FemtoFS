@@ -12,7 +12,7 @@ TEST_CASE("temporary image verification precedes public permissions", "[builder]
         Fixture fixture;
         fixture.options.verify = mode;
         Spool spool(fixture.options.tempDir);
-        auto plan = fixture.plan(spool, {file("hello", "payload")});
+        auto plan = fixture.plan(spool, {builder_test::file("hello", "payload")});
         writeRegularOutput(fixture.options, plan, spool, fixture.inputStatus);
         REQUIRE(io.verificationReads > 0);
         CHECK(io.privateReads);
@@ -46,7 +46,7 @@ TEST_CASE("publication errors preserve the destination before publish", "[builde
         CAPTURE(fault);
         Fixture fixture;
         Spool spool(fixture.options.tempDir);
-        auto plan = fixture.plan(spool, {file("hello", "payload")});
+        auto plan = fixture.plan(spool, {builder_test::file("hello", "payload")});
         std::ofstream(fixture.options.output) << "previous image";
         fixture.options.force = true;
         io.corruptOnReopen = fault == 0;
@@ -73,7 +73,7 @@ TEST_CASE("each regular writer write and flush failure prevents publication", "[
     for (int failAt = 0; failAt <= operationCount; ++failAt) {
         Fixture fixture;
         Spool spool(fixture.options.tempDir);
-        auto plan = fixture.plan(spool, {file("payload", std::string(5000, 'x'))});
+        auto plan = fixture.plan(spool, {builder_test::file("payload", std::string(5000, 'x'))});
         std::ofstream(fixture.options.output) << "previous image";
         fixture.options.force = true;
         io.failAt = failAt;
@@ -98,7 +98,7 @@ TEST_CASE("device commit recovery reports observed bytes and retains failure", "
         CAPTURE(fault);
         Fixture fixture;
         Spool spool(fixture.options.tempDir);
-        auto plan = fixture.plan(spool, {file("hello", "payload")});
+        auto plan = fixture.plan(spool, {builder_test::file("hello", "payload")});
         FileDescriptor fd(::open(fixture.options.output.c_str(), O_RDWR | O_CREAT, 0600));
         REQUIRE(fd.get() >= 0);
         io.output = fd.get();
@@ -135,7 +135,7 @@ TEST_CASE("device precommit faults never write the final header", "[builder][dev
     for (int failAt = 0; failAt <= operationCount; ++failAt) {
         Fixture fixture;
         Spool spool(fixture.options.tempDir);
-        auto plan = fixture.plan(spool, {file("hello", std::string(5000, 'x'))});
+        auto plan = fixture.plan(spool, {builder_test::file("hello", std::string(5000, 'x'))});
         FileDescriptor fd(::open(fixture.options.output.c_str(), O_RDWR | O_CREAT, 0600));
         REQUIRE(fd.get() >= 0);
         io.output = fd.get();

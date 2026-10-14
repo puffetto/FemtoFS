@@ -40,7 +40,7 @@ TEST_CASE("page edge payloads preserve bytes and zero holes", "[builder][layout]
     Spool spool(fixture.options.tempDir);
     std::vector<Node> nodes;
     for (size_t size : {0, 1, 3, 4, 4091, 4092, 4095, 4096, 4097, 8191, 8192})
-        nodes.push_back(file(std::to_string(size), std::string(size, 'x')));
+        nodes.push_back(builder_test::file(std::to_string(size), std::string(size, 'x')));
     auto plan = fixture.plan(spool, std::move(nodes));
     writeRegularOutput(fixture.options, plan, spool, fixture.inputStatus);
     for (const auto& blob : plan.blobs) {
@@ -57,12 +57,12 @@ TEST_CASE("root and global metadata limits are independent", "[builder][bounds]"
     Fixture fixture;
     Spool spool(fixture.options.tempDir);
     std::vector<Node> nodes;
-    for (uint32_t i = 0; i < 32767; ++i) nodes.push_back(file(std::to_string(i), ""));
+    for (uint32_t i = 0; i < 32767; ++i) nodes.push_back(builder_test::file(std::to_string(i), ""));
     auto minimum = makeDirectoryPlans(nodes, true);
     REQUIRE(minimum.size() == 1);
     CHECK(minimum[0].children.size() == 32767);
     CHECK(minimum[0].hash.tableSize <= 65521);
-    nodes.push_back(file("limit", ""));
+    nodes.push_back(builder_test::file("limit", ""));
     CHECK_THROWS_WITH(makeDirectoryPlans(nodes, true), ContainsSubstring("2^15"));
     auto plan = fixture.plan(spool);
     plan.cellCount = 65535;
@@ -78,7 +78,7 @@ TEST_CASE("root and global metadata limits are independent", "[builder][bounds]"
 TEST_CASE("attribute reuse affects deterministic metadata fallback", "[builder][budget]")
 {
     std::vector<Node> nodes;
-    for (uint32_t i = 0; i < 100; ++i) nodes.push_back(file(std::to_string(i), ""));
+    for (uint32_t i = 0; i < 100; ++i) nodes.push_back(builder_test::file(std::to_string(i), ""));
     auto dirs = makeDirectoryPlans(nodes, true);
     const auto minimum = dirs[0].hash.tableSize;
     dirs[0].hash.tableSize = 65521;
@@ -102,7 +102,7 @@ TEST_CASE("plan validator rejects chain and content defects", "[builder][validat
 {
     Fixture fixture;
     Spool spool(fixture.options.tempDir);
-    const auto valid = fixture.plan(spool, {file("alpha", "payload"), file("beta", "other")});
+    const auto valid = fixture.plan(spool, {builder_test::file("alpha", "payload"), builder_test::file("beta", "other")});
     REQUIRE_NOTHROW(validatePlan(valid));
     for (int fault = 0; fault < 13; ++fault) {
         CAPTURE(fault);
@@ -148,15 +148,15 @@ TEST_CASE("public hardlink and filename promotion preserves symlink isolation", 
 {
     Fixture fixture;
     Spool spool(fixture.options.tempDir);
-    Node hidden = file("hidden", "");
+    Node hidden = builder_test::file("hidden", "");
     hidden.kind = NodeKind::directory;
     hidden.attr.mode = S_IFDIR | 0700;
     hidden.payload.reset();
-    auto privateFile = file("hidden/a", "shared");
-    auto publicLink = file("visible", "shared");
+    auto privateFile = builder_test::file("hidden/a", "shared");
+    auto publicLink = builder_test::file("visible", "shared");
     publicLink.explicitHardlink = "hidden/a";
-    auto sharedName = file("shared", "different");
-    auto symlink = file("link", "");
+    auto sharedName = builder_test::file("shared", "different");
+    auto symlink = builder_test::file("link", "");
     symlink.kind = NodeKind::symlink;
     symlink.attr.mode = S_IFLNK | 0777;
     symlink.payload.reset();
@@ -180,7 +180,7 @@ TEST_CASE("output verification detects altered bytes in both modes", "[builder][
         for (int fault = 0; fault < 5; ++fault) {
             Fixture fixture;
             Spool spool(fixture.options.tempDir);
-            auto plan = fixture.plan(spool, {file("alpha", "payload")});
+            auto plan = fixture.plan(spool, {builder_test::file("alpha", "payload")});
             FileDescriptor fd(::open(fixture.options.output.c_str(), O_RDWR | O_CREAT, 0600));
             writeImage(fd.get(), plan, spool, false);
             REQUIRE_NOTHROW(verifyImage(fd.get(), plan, spool, mode, false));
@@ -244,7 +244,7 @@ TEST_CASE("maximum directory table fits when the independent cell budget permits
 {
     Fixture fixture;
     Spool spool(fixture.options.tempDir);
-    auto plan = fixture.plan(spool, {file("only", "data")});
+    auto plan = fixture.plan(spool, {builder_test::file("only", "data")});
     plan.directories[0].hash.tableSize = 65521;
     constructBuckets(plan.directories, plan.nodes, 0);
     plan.attrAtCell.clear();

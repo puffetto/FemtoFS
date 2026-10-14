@@ -340,6 +340,9 @@ static int ff_mount(struct mount *mp)
     sx_init(&fs->cache_lock, "femtofs clean pages");
     fs->device = vp;
     fs->leaking = PAGE_SIZE <= FF_PAGE && vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0);
+    /* Mode-bit visibility cannot authorize spill under an active MAC policy. */
+    if (mac_vnode_check_access_enabled() || mac_vnode_check_lookup_enabled() ||
+        mac_vnode_check_open_enabled() || mac_vnode_check_mmap_enabled()) fs->leaking = 0;
     g_topology_lock(); error = g_vfs_open(vp, &fs->consumer, "femtofs", 0); g_topology_unlock();
     VOP_UNLOCK(vp);
     if (error) goto fail;
