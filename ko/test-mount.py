@@ -134,7 +134,7 @@ try:
             with (mountpoint/'file-10000').open('rb') as f:
                 sender, receiver = socket.socketpair()
                 try:
-                    assert os.sendfile(f.fileno(), sender.fileno(), 0, 10000) == 10000
+                    assert os.sendfile(sender.fileno(), f.fileno(), 0, 10000) == 10000
                     assert receiver.recv(10001) == (source/'file-10000').read_bytes()
                 finally:
                     sender.close(); receiver.close()

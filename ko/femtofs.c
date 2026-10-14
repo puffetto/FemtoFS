@@ -193,6 +193,14 @@ static int ff_reclaim(struct vop_reclaim_args *ap)
     return 0;
 }
 static int ff_setattr(struct vop_setattr_args *ap) { (void)ap; return EROFS; }
+static int ff_getpages_async(struct vop_getpages_async_args *ap)
+{
+    /* The resident snapshot completes synchronously, including sendfile's callback. */
+    int error = VOP_GETPAGES(ap->a_vp, ap->a_m, ap->a_count, ap->a_rbehind, ap->a_rahead);
+    if (ap->a_iodone) ap->a_iodone(ap->a_arg, ap->a_m, ap->a_count,
+        error == VM_PAGER_OK ? 0 : EIO);
+    return error;
+}
 
 /* Pager references keep the vnode, mount snapshot, and cached clean pages alive. */
 static int ff_pager_ctor(void *handle, vm_ooffset_t size, vm_prot_t prot,
@@ -409,7 +417,8 @@ static struct vop_vector ff_vops = {
     .vop_read = ff_read, .vop_readlink = ff_readlink, .vop_readdir = ff_readdir,
     .vop_reclaim = ff_reclaim, .vop_inactive = VOP_NULL,
     .vop_getpages = vnode_pager_local_getpages,
-    .vop_getpages_async = vnode_pager_local_getpages_async,
+    .vop_getpages_async = ff_getpages_async,
+    .vop_bmap = VOP_EOPNOTSUPP, /* Select the generic pager's VOP_READ fallback. */
     .vop_setattr = ff_setattr, .vop_pathconf = vop_stdpathconf,
     .vop_advise = VOP_NULL, /* The immutable snapshot is already resident. */
 };
