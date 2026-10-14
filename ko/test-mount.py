@@ -81,6 +81,9 @@ try:
             run(helper, '-o', mode, device, mountpoint)
             mounted = True
             run(probe.with_name('test-directory'), mountpoint)
+            refused = subprocess.run([str(builder), '--device', '--temp-dir', str(base),
+                                      str(source), device], capture_output=True)
+            assert refused.returncode != 0 and b'output device is mounted' in refused.stderr
             seen = 0
             for original in [source, *source.rglob('*')]:
                 rel = original.relative_to(source)
@@ -132,14 +135,25 @@ for path in ('private', 'hidden/promoted'):
             assert os.write(fd, b'fifo') == 4 and os.read(fd, 4) == b'fifo'
             os.close(fd)
             page = os.sysconf('SC_PAGE_SIZE')
-            for name in ('file-0', 'file-1', 'file-4095', 'file-4096', 'file-4097', 'file-8192', 'file-10000', 'private', 'visible'):
+            copied_before = int(subprocess.check_output(['sysctl', '-n', 'vfs.femtofs.clean_pages']))
+            direct_before = int(subprocess.check_output(['sysctl', '-n', 'vfs.femtofs.direct_faults']))
+            copied_sources = set()
+            for name in ('file-0', 'file-1', 'file-4095', 'file-4096', 'file-4097', 'file-8192', 'file-10000', 'private', 'visible', 'hardlink', 'entry-000', 'entry-001'):
                 off, size = files[name]
                 rounded = (size+page-1)//page*page
                 leaking = mode == 'leaking' and page <= 4096 and size >= page and off % page == 0 and off+rounded <= private
                 expected = raw[off:off+rounded] if leaking else raw[off:off+size] + b'\0'*(rounded-size)
                 expected_file = base / 'expected'
                 expected_file.write_bytes(expected)
+                for relative in range(0, size, page):
+                    if (off + relative) % page or (relative + page > size and not leaking):
+                        copied_sources.add(off + relative)
                 run(probe, mountpoint/name, expected_file, mountpoint)
+            copied_after = int(subprocess.check_output(['sysctl', '-n', 'vfs.femtofs.clean_pages']))
+            direct_after = int(subprocess.check_output(['sysctl', '-n', 'vfs.femtofs.direct_faults']))
+            assert copied_after - copied_before == len(copied_sources), 'copied-page cache did not share source locations'
+            assert direct_after > direct_before, 'no direct image-page faults observed'
+            print(f'pager: {direct_after-direct_before} direct faults; exactly {len(copied_sources)} shared clean pages', flush=True)
             run('umount', mountpoint); mounted = False
             print(f'{mode}, sector={sector}: {seen} objects; metadata, reads, names, FIFO, concurrency and mmap passed', flush=True)
         run('mdconfig', '-d', '-u', unit); unit = None

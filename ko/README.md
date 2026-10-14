@@ -39,6 +39,9 @@ distinct inode identity. `leaking` exposes only validated public-part pages; pri
 payloads use clean behavior. Larger VM pages force clean behavior. The standard
 vnode pager remains available for kernel consumers such as executable loading and
 sendfile. `fadvise` is accepted as a hint; the snapshot is already resident.
+Active MAC access/lookup/open/mmap policies also force clean behavior at mount.
+`vfs.femtofs.direct_faults` and `vfs.femtofs.clean_pages` expose cumulative pager
+counters for checking direct-page use and copied-page cache sharing.
 
 The custom mmap entry point rejects writable mappings and prevents later write
 permission upgrades. Pager references keep the vnode and mount alive after the

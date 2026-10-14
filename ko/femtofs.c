@@ -22,6 +22,7 @@
 #include <sys/rwlock.h>
 #include <sys/stat.h>
 #include <sys/sx.h>
+#include <sys/sysctl.h>
 #include <sys/vnode.h>
 #include <geom/geom.h>
 #include <geom/geom_vfs.h>
@@ -34,6 +35,7 @@
 #include <vm/vm_pager.h>
 #include <vm/vnode_pager.h>
 #include <security/mac/mac_framework.h>
+#include <machine/atomic.h>
 #include "image.h"
 
 #if __FreeBSD_version < 1501000 || __FreeBSD_version >= 1502000
@@ -41,6 +43,12 @@
 #endif
 
 static MALLOC_DEFINE(M_FEMTOFS, "femtofs", "femtofs mount and vnode data");
+static u_long ff_direct_faults, ff_clean_pages;
+SYSCTL_NODE(_vfs, OID_AUTO, femtofs, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "femtofs pager");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, direct_faults, CTLFLAG_RD, &ff_direct_faults, 0,
+    "Faults resolved by aliasing immutable image pages");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, clean_pages, CTLFLAG_RD, &ff_clean_pages, 0,
+    "Clean pages populated since module load");
 struct ff_mount {
     struct ff_image image;
     struct vnode *device;
@@ -216,10 +224,11 @@ static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t
         if (!fs->clean[n->blob][index]) {
             fs->clean[n->blob][index] = (vm_offset_t)kmem_malloc(PAGE_SIZE, M_WAITOK | M_ZERO);
             memcpy((void *)fs->clean[n->blob][index], (void *)address, copied);
+            atomic_add_long(&ff_clean_pages, 1);
         }
         address = fs->clean[n->blob][index];
         sx_xunlock(&fs->cache_lock);
-    }
+    } else atomic_add_long(&ff_direct_faults, 1);
     page = vm_page_getfake(pmap_kextract(address), VM_MEMATTR_DEFAULT);
     VM_OBJECT_WLOCK(object);
     vm_page_replace(page, object, (*mres)->pindex, *mres);
