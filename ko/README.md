@@ -4,7 +4,9 @@ The build guard accepts FreeBSD 15.1 and later within 15.x; runtime verification
 currently covers 15.1. FreeBSD 14.x and `dirty` mode are deferred.
 The on-disk contract is [specification.md](../specification.md).
 The [kernel design](design.md) specifies the required single-copy boot-image
-backing and the proposed md interface needed to replace the current snapshot.
+backing and the md interface needed to replace the current snapshot. That
+interface is implemented and guest-tested in the author's FreeBSD fork;
+integration into this module remains pending.
 
 Build the portable decoder and run its regressions locally, from the repository root:
 

@@ -33,11 +33,21 @@ safe kernel borrowing operation. Its private md_s layout must not be duplicated
 in FemtoFS. Preload metadata alone cannot establish the association with an
 arbitrary current md provider or prevent changes through that provider.
 
-Therefore the proposed design requires a small FreeBSD md extension. This is a
-proposal pending approval of the kernel interface change, not an implemented
-capability. The host kernel and boot configuration are not replaced for testing.
+The selected design requires a small FreeBSD md extension. On 15 October 2026,
+the author authorized implementing and committing it to the puffetto/freebsd-src
+fork, checked out under tmp/. Work targets releng/15.1 on a separate fork branch.
+The alternative separate rmd driver is not selected. The host kernel and boot
+configuration are not replaced for testing.
 
-## Proposed md borrowing interface
+## md borrowing interface
+
+The extension is implemented in the author's [FreeBSD fork branch
+femtofs/md-preload-15.1](https://github.com/puffetto/freebsd-src/tree/femtofs/md-preload-15.1).
+The kernel entry points are md_preload_hold and md_preload_release, declared in
+sys/mdioctl.h under _KERNEL, with MD_PRELOAD_API_VERSION set to 1. The production
+patch adds 70 lines across md.c and mdioctl.h. The standalone boot regression is
+under tools/test/md_preload in that fork. Existing FreeBSD copyright and license
+notices are retained.
 
 Add kernel-only hold/release operations, declared in a kernel header, implemented
 inside md.c where the provider and backing ownership are known. The hold accepts
@@ -89,8 +99,8 @@ zero-valued allocation counters alone are insufficient evidence.
 
 ## Verification and delivery order
 
-1. Clarify implementation instructions, then this design, then code. Obtain
-   approval for the specific md interface extension before implementing it.
+1. Clarify implementation instructions, then this design, then code. Approval
+   for the md interface extension was granted on 15 October 2026.
 2. Use local compilation, portable decoder regressions and static checks for
    every code cycle. Commit and push before pulling on toolbox.
 3. Compile against FreeBSD 15.1 on toolbox. Keep kernel-source modifications and
@@ -112,6 +122,21 @@ zero-valued allocation counters alone are insufficient evidence.
 8. Inspect guest logs and cleanup. Record commands, commit IDs and results in
    tmp/REVIEW-execution.md. Preserve explicit unverified limits; a successful
    ordinary mount is not proof of boot-root support.
+
+## md verification status, 15 October 2026
+
+Fork commit 86bd2308 passes local FreeBSD-target compilation of md and its test
+consumer, shellcheck, and native GENERIC/module builds. The QEMU regression
+prints MD_PRELOAD ALL TESTS PASSED and exits successfully. Two loader-preloaded
+images of 64/128 KiB are borrowed at their exact original addresses. Nested holds,
+write denial, ordinary/forced detach denial, module-unload denial and release
+behavior pass; an unrelated malloc device remains writable and detachable.
+The test checks identity through independent provider reads because loader module
+order changed between observed boots. The running toolbox kernel is unchanged.
+
+This verifies the md interface, not the FemtoFS consumer. The guest's root is UFS;
+FemtoFS still needs integration, single-copy root-boot and mmap/memory-accounting
+tests. The previous whole-image snapshot remains in femtofs.c until that work.
 
 ## Existing limitations
 
