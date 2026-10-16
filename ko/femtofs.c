@@ -12,6 +12,7 @@
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/mdioctl.h>
 #include <sys/mman.h>
 #include <sys/module.h>
 #include <sys/mount.h>
@@ -41,21 +42,33 @@
 #if __FreeBSD_version < 1501000 || __FreeBSD_version >= 1600000
 #error "This module requires FreeBSD 15.1 or later within FreeBSD 15.x"
 #endif
+#if !defined(MD_PRELOAD_API_VERSION) || MD_PRELOAD_API_VERSION != 1
+#error "This module requires the md preload borrowing API version 1"
+#endif
 
 static MALLOC_DEFINE(M_FEMTOFS, "femtofs", "femtofs mount and vnode data");
 static u_long ff_direct_faults, ff_clean_pages;
+static u_long ff_borrowed_bytes, ff_snapshot_bytes, ff_clean_bytes, ff_borrowed_faults;
 SYSCTL_NODE(_vfs, OID_AUTO, femtofs, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "femtofs pager");
 SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, direct_faults, CTLFLAG_RD, &ff_direct_faults, 0,
     "Faults resolved by aliasing immutable image pages");
 SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, clean_pages, CTLFLAG_RD, &ff_clean_pages, 0,
     "Clean pages populated since module load");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, borrowed_bytes, CTLFLAG_RD, &ff_borrowed_bytes, 0,
+    "Image bytes borrowed from preloaded md devices");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, snapshot_bytes, CTLFLAG_RD, &ff_snapshot_bytes, 0,
+    "Live wired bytes allocated for fallback image snapshots");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, clean_bytes, CTLFLAG_RD, &ff_clean_bytes, 0,
+    "Live wired bytes allocated for clean mapping pages");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, borrowed_faults, CTLFLAG_RD, &ff_borrowed_faults, 0,
+    "Direct faults resolved from original preloaded image pages");
 struct ff_mount {
     struct ff_image image;
     struct vnode *device;
     struct g_consumer *consumer;
     struct sx cache_lock;
     vm_offset_t **clean; /* Per stored blob, indexed by file-relative page. */
-    int leaking;
+    int leaking, borrowed;
 };
 struct ff_vnode { struct vnode *vp; struct ff_mount *fs; uint32_t id; };
 #define FN(vp) ((struct ff_vnode *)(vp)->v_data)
@@ -202,14 +215,14 @@ static int ff_bmap(struct vop_bmap_args *ap)
 }
 static int ff_getpages_async(struct vop_getpages_async_args *ap)
 {
-    /* The resident snapshot completes synchronously, including sendfile's callback. */
+    /* Resident image reads complete synchronously, including sendfile's callback. */
     int error = VOP_GETPAGES(ap->a_vp, ap->a_m, ap->a_count, ap->a_rbehind, ap->a_rahead);
     if (ap->a_iodone) ap->a_iodone(ap->a_arg, ap->a_m, ap->a_count,
         error == VM_PAGER_OK ? 0 : EIO);
     return error;
 }
 
-/* Pager references keep the vnode, mount snapshot, and cached clean pages alive. */
+/* Pager references retain the vnode, image backing, and cached clean pages. */
 static int ff_pager_ctor(void *handle, vm_ooffset_t size, vm_prot_t prot,
     vm_ooffset_t off, struct ucred *cred, u_short *color)
 {
@@ -241,10 +254,14 @@ static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t
             fs->clean[n->blob][index] = (vm_offset_t)kmem_malloc(PAGE_SIZE, M_WAITOK | M_ZERO);
             memcpy((void *)fs->clean[n->blob][index], (void *)address, copied);
             atomic_add_long(&ff_clean_pages, 1);
+            atomic_add_long(&ff_clean_bytes, PAGE_SIZE);
         }
         address = fs->clean[n->blob][index];
         sx_xunlock(&fs->cache_lock);
-    } else atomic_add_long(&ff_direct_faults, 1);
+    } else {
+        atomic_add_long(&ff_direct_faults, 1);
+        if (fs->borrowed) atomic_add_long(&ff_borrowed_faults, 1);
+    }
     page = vm_page_getfake(pmap_kextract(address), VM_MEMATTR_DEFAULT);
     VM_OBJECT_WLOCK(object);
     vm_page_replace(page, object, (*mres)->pindex, *mres);
@@ -325,15 +342,27 @@ static void ff_free(struct ff_mount *fs)
     if (fs->clean) {
         for (i = 0; i < fs->image.nblobs; i++) if (fs->clean[i]) {
             for (j = 0; j < howmany(fs->image.blobs[i].size, PAGE_SIZE); j++)
-                if (fs->clean[i][j]) kmem_free((void *)fs->clean[i][j], PAGE_SIZE);
+                if (fs->clean[i][j]) {
+                    kmem_free((void *)fs->clean[i][j], PAGE_SIZE);
+                    atomic_subtract_long(&ff_clean_bytes, PAGE_SIZE);
+                }
             free(fs->clean[i], M_FEMTOFS);
         }
         free(fs->clean, M_FEMTOFS);
     }
-    if (fs->image.bytes) kmem_free(__DECONST(uint8_t *, fs->image.bytes), round_page(fs->image.size));
+    if (fs->image.bytes) {
+        if (fs->borrowed) atomic_subtract_long(&ff_borrowed_bytes, fs->image.size);
+        else {
+            kmem_free(__DECONST(uint8_t *, fs->image.bytes), round_page(fs->image.size));
+            atomic_subtract_long(&ff_snapshot_bytes, round_page(fs->image.size));
+        }
+    }
     ff_destroy(&fs->image);
     if (fs->consumer) {
-        g_topology_lock(); g_vfs_close(fs->consumer); g_topology_unlock();
+        g_topology_lock();
+        if (fs->borrowed) md_preload_release(fs->consumer);
+        g_vfs_close(fs->consumer);
+        g_topology_unlock();
     }
     if (fs->device) vrele(fs->device);
     sx_destroy(&fs->cache_lock);
@@ -346,9 +375,11 @@ static int ff_mount(struct mount *mp)
     struct ff_mount *fs;
     struct buf *bp = NULL;
     struct vnode *vp;
+    const void *base = NULL;
+    size_t capacity = 0;
     char *from;
     uint32_t off, count;
-    int error;
+    int error, exclusive_error;
     if (mp->mnt_flag & MNT_UPDATE) return EOPNOTSUPP;
     if (vfs_filteropt(mp->mnt_optnew, opts)) return EINVAL;
     if (vfs_flagopt(mp->mnt_optnew, "clean", NULL, 0) && vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) return EINVAL;
@@ -368,24 +399,43 @@ static int ff_mount(struct mount *mp)
     /* Mode-bit visibility cannot authorize spill under an active MAC policy. */
     if (mac_vnode_check_access_enabled() || mac_vnode_check_lookup_enabled() ||
         mac_vnode_check_open_enabled() || mac_vnode_check_mmap_enabled()) fs->leaking = 0;
-    g_topology_lock(); error = g_vfs_open(vp, &fs->consumer, "femtofs", 0); g_topology_unlock();
+    g_topology_lock();
+    error = g_vfs_open(vp, &fs->consumer, "femtofs", 0);
+    if (!error) {
+        exclusive_error = g_access(fs->consumer, 0, 0, 1);
+        /* Unsupported providers report EOPNOTSUPP even without exclusivity. */
+        error = md_preload_hold(fs->consumer, &base, &capacity);
+        if (!error) fs->borrowed = 1;
+        else if (!exclusive_error) (void)g_access(fs->consumer, 0, 0, -1);
+    }
+    g_topology_unlock();
     VOP_UNLOCK(vp);
-    if (error) goto fail;
+    if (error && error != EOPNOTSUPP) goto fail;
+    if (!fs->consumer) goto fail;
     if (!fs->consumer->provider->sectorsize || FF_PAGE % fs->consumer->provider->sectorsize ||
         fs->consumer->provider->mediasize < FF_PAGE) { error = EINVAL; goto fail; }
-    error = bread(vp, 0, FF_PAGE, NOCRED, &bp);
-    if (error) goto fail;
-    error = ff_header((const uint8_t *)bp->b_data, fs->consumer->provider->mediasize, &fs->image);
-    brelse(bp); bp = NULL;
-    if (error) goto fail;
-    fs->image.bytes = (uint8_t *)kmem_malloc(round_page(fs->image.size), M_NOWAIT | M_ZERO);
-    if (!fs->image.bytes) { error = ENOMEM; goto fail; }
-    for (off = 0; off < fs->image.size; off += count) {
-        count = MIN(FF_PAGE, fs->image.size - off);
-        error = bread(vp, off / DEV_BSIZE, count, NOCRED, &bp);
+    if (fs->borrowed) {
+        if ((vm_offset_t)base & PAGE_MASK) { error = EINVAL; goto fail; }
+        error = ff_header(base, capacity, &fs->image);
         if (error) goto fail;
-        memcpy(__DECONST(uint8_t *, fs->image.bytes) + off, bp->b_data, count);
+        fs->image.bytes = base;
+        atomic_add_long(&ff_borrowed_bytes, fs->image.size);
+    } else {
+        error = bread(vp, 0, FF_PAGE, NOCRED, &bp);
+        if (error) goto fail;
+        error = ff_header((const uint8_t *)bp->b_data, fs->consumer->provider->mediasize, &fs->image);
         brelse(bp); bp = NULL;
+        if (error) goto fail;
+        fs->image.bytes = (uint8_t *)kmem_malloc(round_page(fs->image.size), M_NOWAIT | M_ZERO);
+        if (!fs->image.bytes) { error = ENOMEM; goto fail; }
+        atomic_add_long(&ff_snapshot_bytes, round_page(fs->image.size));
+        for (off = 0; off < fs->image.size; off += count) {
+            count = MIN(FF_PAGE, fs->image.size - off);
+            error = bread(vp, off / DEV_BSIZE, count, NOCRED, &bp);
+            if (error) goto fail;
+            memcpy(__DECONST(uint8_t *, fs->image.bytes) + off, bp->b_data, count);
+            brelse(bp); bp = NULL;
+        }
     }
     error = ff_validate(&fs->image);
     if (error) goto fail;
@@ -393,6 +443,8 @@ static int ff_mount(struct mount *mp)
     mp->mnt_data = fs;
     MNT_ILOCK(mp); mp->mnt_flag |= MNT_RDONLY | MNT_LOCAL; MNT_IUNLOCK(mp);
     vfs_getnewfsid(mp); vfs_mountedfrom(mp, from); ff_statfs(mp, &mp->mnt_stat);
+    if (bootverbose) printf("femtofs: %s %s %u bytes at %p\n", from,
+        fs->borrowed ? "borrowed" : "snapshot", fs->image.size, fs->image.bytes);
     return 0;
 fail:
     if (bp) brelse(bp);
@@ -417,6 +469,7 @@ static struct vfsops ff_vfsops = {
 };
 VFS_SET(ff_vfsops, femtofs, VFCF_READONLY);
 MODULE_VERSION(femtofs, 1);
+MODULE_DEPEND(femtofs, geom_md, 0, 0, 0);
 static struct vop_vector ff_vops = {
     .vop_default = &default_vnodeops,
     .vop_access = ff_access, .vop_getattr = ff_getattr, .vop_open = ff_open,
@@ -427,7 +480,7 @@ static struct vop_vector ff_vops = {
     .vop_getpages_async = ff_getpages_async,
     .vop_bmap = ff_bmap,
     .vop_setattr = ff_setattr, .vop_pathconf = vop_stdpathconf,
-    .vop_advise = VOP_NULL, /* The immutable snapshot is already resident. */
+    .vop_advise = VOP_NULL, /* The immutable image is already resident. */
 };
 VFS_VOP_VECTOR_REGISTER(ff_vops);
 static struct vop_vector ff_fifoops = {

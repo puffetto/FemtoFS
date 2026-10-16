@@ -84,10 +84,13 @@ failure path unwinds exactly the resources it acquired. The existing pager's
 vnode references continue to prevent unmount while mappings survive closed file
 descriptors. Non-root unmount/remount must preserve the original backing bytes.
 
-For ordinary device testing, a full-copy snapshot path may remain available only
-through an explicit mount option. The default boot path requires borrowed
-backing. Tests must distinguish these paths rather than accidentally validating
-the snapshot path as evidence of zero-copy boot support.
+The author clarified on 16 October 2026 that EOPNOTSUPP from md_preload_hold
+automatically selects the existing full-copy snapshot path. No opt-in option is
+needed for file-backed md or other unsupported providers. Other errors abort the
+mount; invalid borrowed images or alignment never trigger copying. The module
+requires the patched md API at build/load time, so missing hooks are not silently
+treated as an unsupported provider. Tests must distinguish borrowed backing from
+the fallback rather than accepting snapshot tests as zero-copy boot evidence.
 
 Keep the existing decoder, lookup, access controls, and clean/leaking page policy.
 Direct faults use physical pages corresponding to the borrowed image address.
@@ -106,7 +109,7 @@ zero-valued allocation counters alone are insufficient evidence.
 3. Compile against FreeBSD 15.1 on toolbox. Keep kernel-source modifications and
    custom kernel artifacts in a disposable checkout/build area; never install
    them into the toolbox host's boot tree.
-4. Run the existing mounted regression matrix on the explicitly selected snapshot
+4. Run the existing mounted regression matrix on the automatically selected snapshot
    path, including malformed-image rejection and failure cleanup.
 5. Boot a disposable VM through the FreeBSD loader with the module and two
    distinct md_image payloads. Mount FemtoFS as root and run a test init from it.

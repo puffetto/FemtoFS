@@ -4,9 +4,9 @@ The build guard accepts FreeBSD 15.1 and later within 15.x; runtime verification
 currently covers 15.1. FreeBSD 14.x and `dirty` mode are deferred.
 The on-disk contract is [specification.md](../specification.md).
 The [kernel design](design.md) specifies the required single-copy boot-image
-backing and the md interface needed to replace the current snapshot. That
-interface is implemented and guest-tested in the author's FreeBSD fork;
-integration into this module remains pending.
+backing and the md interface implemented in the author's FreeBSD fork. Mounts
+borrow preloaded image pages; EOPNOTSUPP automatically selects the original
+snapshot path for file-backed md and other unsupported providers.
 
 Build the portable decoder and run its regressions locally, from the repository root:
 
@@ -16,11 +16,13 @@ python3 ko/test-image.py tmp/notes-audit-build/makefemtofs tmp/ko-host/check-ima
 ```
 
 Commit and push locally before pulling and building on FreeBSD. Native builds use
-the installed kernel sources and BSD make; keep output under `tmp/`:
+the patched kernel sources and BSD make; keep output under `tmp/`. The running
+kernel must provide MD_PRELOAD_API_VERSION=1 (the fork's md hooks); an unpatched
+kernel cannot load this module:
 
 ```sh
 mkdir -p tmp/ko-native
-env MAKEOBJDIR="$PWD/tmp/ko-native" make -C ko
+env MAKEOBJDIR="$PWD/tmp/ko-native" make -C ko SYSDIR="$PWD/tmp/freebsd-src/sys"
 env MAKEOBJDIR="$PWD/tmp/ko-native" make -C ko -f Makefile.mount
 sudo kldload "$PWD/tmp/ko-native/femtofs.ko"
 sudo tmp/ko-native/mount_femtofs -o clean /dev/mdN /existing/mountpoint
@@ -30,23 +32,30 @@ Use only an explicitly allocated test provider, and unmount it before detaching
 that provider or unloading the module. No installation into `/boot/kernel` or
 changes to boot configuration are needed for testing.
 
-The mount takes an immutable, wired snapshot of the image from the GEOM provider.
-This costs one image-sized allocation in addition to the provider's own storage;
-allocation failure returns `ENOMEM`. Metadata is decoded once. Lookup uses the
+For a preloaded md, the mount borrows and validates the original loader allocation,
+with no image-sized copy. Its md hold prevents writes and forced detach until
+unmount. Only EOPNOTSUPP selects the existing wired snapshot fallback; other
+borrowing errors and invalid borrowed images fail the mount. The fallback costs
+one image-sized allocation; allocation failure returns `ENOMEM`.
+Metadata is decoded once. Lookup uses the
 image's hash chains and the VFS namecache. Hardlinks retain canonical inode
 identity; directories synthesize `.` and `..`; FIFOs use FreeBSD's FIFO operations.
 Times are zero because this format does not store timestamps.
 
-Aligned mmap pages directly alias the snapshot's physical pages. Partial clean
+Aligned mmap pages directly alias the selected backing's physical pages. Partial clean
 tails and unaligned file pages are copied lazily, zero-filled, and cached by blob
 offset and page index. Deduplicated files share that cache while retaining their
 distinct inode identity. `leaking` exposes only validated public-part pages; private
 payloads use clean behavior. Larger VM pages force clean behavior. The standard
 vnode pager remains available for kernel consumers such as executable loading and
-sendfile. `fadvise` is accepted as a hint; the snapshot is already resident.
+sendfile. `fadvise` is accepted as a hint; the image is already resident.
 Active MAC access/lookup/open/mmap policies also force clean behavior at mount.
 `vfs.femtofs.direct_faults` and `vfs.femtofs.clean_pages` expose cumulative pager
 counters for checking direct-page use and copied-page cache sharing.
+`borrowed_bytes`, `snapshot_bytes` and `clean_bytes` under the same sysctl node
+report live backing/copy usage; `borrowed_faults` counts direct faults from
+original preloaded pages. With bootverbose, each mount logs its backing address
+and ownership so the boot regression can compare it with the loader's md address.
 
 The custom mmap entry point rejects writable mappings and prevents later write
 permission upgrades. Pager references keep the vnode and mount alive after the
