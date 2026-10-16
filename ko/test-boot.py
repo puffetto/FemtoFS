@@ -26,18 +26,18 @@ build, root, stage, data = (work / n for n in ('module', 'root', 'stage', 'data'
 build.mkdir(); root.mkdir(); data.mkdir()
 # The existing md regression supplies the tested kernel, loader and disk layout.
 stage.mkdir()
-shutil.copytree(base/'root/boot', stage/'boot')
+shutil.copytree(base/'root/boot', stage/'boot', copy_function=shutil.copy)
 env = dict(os.environ, MAKEOBJDIR=str(build))
 run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', env=env)
 for name in ('mount_femtofs', 'test-mmap', 'test-directory'):
     run('cc', '-static', '-Wall', '-Wextra', '-Werror', '-g', repo/f'ko/{name}.c', '-o', root/name)
-shutil.copy2(build/'femtofs.ko', stage/'boot/kernel/femtofs.ko')
+shutil.copy(build/'femtofs.ko', stage/'boot/kernel/femtofs.ko')
 
 # Dynamic test tools live on UFS: writable private library mappings are outside
 # FemtoFS's read-only mmap contract. Init and the filesystem probes are static.
 python = Path(sys.executable).resolve()
 stdlib = Path(sysconfig.get_path('stdlib'))
-shutil.copytree(stdlib, stage/stdlib.relative_to('/'),
+shutil.copytree(stdlib, stage/stdlib.relative_to('/'), copy_function=shutil.copy,
                 ignore=shutil.ignore_patterns('__pycache__', 'site-packages', 'test',
                                              'idlelib', 'tkinter', 'turtledemo', 'ensurepip'))
 runtime = [python, builder, *stdlib.glob('lib-dynload/*.so')]
@@ -48,15 +48,15 @@ for binary in runtime:
 for binary in [python, *libraries]:
     target = stage/binary.relative_to('/')
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(binary, target)
-shutil.copy2(builder, stage/'makefemtofs')
+    shutil.copy(binary, target)
+shutil.copy(builder, stage/'makefemtofs')
 
 for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'tmp', 'var/run'):
     (root/name).mkdir(parents=True, exist_ok=True)
 for name in ('usr', 'lib', 'libexec'):
     (root/name).symlink_to('/runtime/'+name)
 (root/'makefemtofs').symlink_to('/runtime/makefemtofs')
-shutil.copy2('/rescue/rescue', root/'rescue/rescue')
+shutil.copy('/rescue/rescue', root/'rescue/rescue')
 for name in ('sh', 'init', 'mount', 'umount', 'sysctl', 'mdconfig', 'dd', 'md5',
              'echo', 'reboot', 'sync'):
     os.link(root/'rescue/rescue', root/'rescue'/name)
@@ -64,8 +64,8 @@ os.link(root/'rescue/rescue', root/'bin/sh')
 os.link(root/'rescue/rescue', root/'bin/echo')
 os.link(root/'rescue/rescue', root/'sbin/init')
 os.link(root/'rescue/rescue', root/'sbin/mount')
-shutil.copy2('/etc/login.conf', root/'etc/login.conf')
-shutil.copy2('/var/run/ld-elf.so.hints', root/'var/run/ld-elf.so.hints')
+shutil.copy('/etc/login.conf', root/'etc/login.conf')
+shutil.copy('/var/run/ld-elf.so.hints', root/'var/run/ld-elf.so.hints')
 (root/'etc/fstab').write_text('/dev/md0 / femtofs ro 0 0\n')
 (root/'etc/master.passwd').write_text(
     'root:*:0:0::0:0:Root:/root:/rescue/sh\n'
@@ -73,7 +73,7 @@ shutil.copy2('/var/run/ld-elf.so.hints', root/'var/run/ld-elf.so.hints')
 run('pwd_mkdb', '-p', '-d', root/'etc', root/'etc/master.passwd')
 for name in ('test-mount.py', 'test-boot-guest.py'):
     ast.parse((repo/'ko'/name).read_text())
-    shutil.copy2(repo/'ko'/name, root/name)
+    shutil.copy(repo/'ko'/name, root/name)
 (root/'identity').write_text('FemtoFS root\n')
 (root/'etc/rc').write_text('''#!/rescue/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
