@@ -107,6 +107,7 @@ raw[0] ^= 128; raw[12] ^= 128
 (stage/'boot/bad-metadata.img').write_bytes(raw)
 # Explicit loading order is required for a named root device. Lua module-table
 # iteration from loader.conf does not guarantee a filename-to-md-unit order.
+(stage/'boot/lua/loader.lua').chmod(0o644)
 (stage/'boot/lua/loader.lua').write_text('''require("cli")
 loader.perform("set console=comconsole")
 loader.perform("set comconsole_speed=115200")
