@@ -166,7 +166,9 @@ backing addresses, no panic and QEMU exit zero. Artifacts are retained under
 The unprivileged fixture preserves non-root ownership and emits login.conf trust
 warnings; fixture construction also reports the rescue shell missing from the
 host shell list and discarded unrepresentable metadata. These are recorded rather
-than claimed as a warning-free boot. The module compiler emits no warnings.
+than claimed as a warning-free boot. Shutdown reports root unmount error 45
+because forced unmount is unsupported; buffers sync and the VM powers off.
+The module compiler emits no warnings.
 
 The root init and probes are static. Python, the builder and shared libraries
 execute from UFS: writable private mappings remain prohibited by FemtoFS's
