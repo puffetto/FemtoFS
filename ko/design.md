@@ -19,9 +19,9 @@ claim that every executable or sendfile operation avoids the vnode page cache.
 Those consumers currently use the standard vnode pager and must be measured
 separately from image backing.
 
-## Current baseline and the missing interface
+## Original baseline and the required interface
 
-The initial module opens the GEOM provider, reads its header, allocates
+The initial module opened the GEOM provider, reads its header, allocates
 round_page(image_size) bytes with kmem_malloc, copies the complete image with
 bread/memcpy, and validates that copy. Its direct mmap pager aliases pages of
 that new allocation. ff_free releases the allocation at unmount.
@@ -137,9 +137,43 @@ behavior pass; an unrelated malloc device remains writable and detachable.
 The test checks identity through independent provider reads because loader module
 order changed between observed boots. The running toolbox kernel is unchanged.
 
-This verifies the md interface, not the FemtoFS consumer. The guest's root is UFS;
-FemtoFS still needs integration, single-copy root-boot and mmap/memory-accounting
-tests. The previous whole-image snapshot remains in femtofs.c until that work.
+That regression verifies the md interface with a UFS root. The FemtoFS consumer
+now uses the hold/release API and retains the old snapshot path exclusively for
+EOPNOTSUPP. See the consumer boot regression below.
+
+## FemtoFS verification status, 16 October 2026
+
+Consumer commit df3b952 and boot-harness fixes through 69e56e7 pass local
+FreeBSD-target compilation, 13 portable decoder regressions, and native module
+compilation. The QEMU guest boots its static init from a 33,480,704-byte FemtoFS
+root and mounts a distinct 61,440-byte preloaded image. Both backing addresses
+match md's original loader addresses. Live snapshot bytes remain zero throughout
+the borrowed-image tests; direct borrowed faults increase and clean-copy memory
+returns to baseline after secondary-image unmount.
+
+Both clean/leaking borrowed-image tests pass content, directory, hardlink,
+symlink, FIFO, mmap protection/tail/lifetime/EOF and sendfile checks. Busy preload
+rejection and two malformed preload failures leave accounting balanced and release
+holds. Forced detach is refused while mounted; unmount/remount preserves contents.
+The file-backed md fallback succeeds even with an existing writer, and the existing
+clean/leaking matrix passes at 512/4096-byte sectors: 316 objects per combination,
+48 mmap probes, static executable loading, permissions, concurrent lookup, empty
+root and ten malformed-image rejections. Snapshot accounting returns to zero.
+
+The host runner confirms FEMTOFS_BOOT ALL TESTS PASSED, guest status zero, matching
+backing addresses, no panic and QEMU exit zero. Artifacts are retained under
+`tmp/femtofs-boot-evidence/` locally and `tmp/femtofs-boot-3/` on toolbox.
+The unprivileged fixture preserves non-root ownership and emits login.conf trust
+warnings; fixture construction also reports the rescue shell missing from the
+host shell list and discarded unrepresentable metadata. These are recorded rather
+than claimed as a warning-free boot. The module compiler emits no warnings.
+
+The root init and probes are static. Python, the builder and shared libraries
+execute from UFS: writable private mappings remain prohibited by FemtoFS's
+current mmap contract. A fully dynamic root, arm64, other VM page sizes and other
+15.x releases are not established by this test. Standard vnode-pager allocations
+for executable loading/sendfile are separate from the single original image
+backing; these tests do not claim that every I/O path is zero-copy.
 
 ## Existing limitations
 

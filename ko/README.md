@@ -94,6 +94,24 @@ contents, read-only protections, closed-descriptor lifetime and EOF faults. Page
 counters check actual direct-page use and sharing of clean copies. All providers
 and mounts belong to the test; cleanup failure retains backing files.
 
+The root-boot regression reuses the boot artifacts from the fork's
+`tools/test/md_preload/run.sh` regression. Run it as an ordinary user on toolbox
+with a new output directory:
+
+```sh
+python3 ko/test-boot.py tmp/md-guest-4 tmp/ko-build/makefemtofs \
+  tmp/freebsd-src tmp/femtofs-boot-test
+```
+
+It builds the module and static probes, boots a FemtoFS root through the loader,
+checks a second preloaded image in both modes, and runs the file-backed matrix.
+It compares mount backing addresses against md's original loader addresses and
+checks live snapshot/clean-copy accounting, failed-mount cleanup and busy-provider
+rejection. QEMU uses TCG with no guest network and preserves its console log.
+The root init and probes are static; Python, the builder and their shared libraries
+live on a separate UFS test volume. This does not establish a fully dynamic FemtoFS
+root: writable private mmap remains rejected by the current contract.
+
 The decoder can also run under coverage-guided fuzzing:
 
 ```sh

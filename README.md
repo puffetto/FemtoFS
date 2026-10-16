@@ -224,8 +224,9 @@ fault injection, and passes on macOS and FreeBSD 15.1, including ASan/UBSan runs
 The [kernel module](ko/README.md) targets FreeBSD 15.1 with `clean` and `leaking`
 modes; 14.x compatibility and `dirty` mode are deferred. Native tests cover
 provider I/O, mounted metadata and permissions, name lookup, FIFOs, and mmap
-contents, protection and page sharing. The initial module keeps an image-sized
-wired snapshot. FreeBSD's normalization of original mmap offsets remains a
+contents, protection and page sharing. With the patched md interface, preloaded
+images retain their original backing; unsupported providers automatically use an
+image-sized wired snapshot only when the hook returns `EOPNOTSUPP`. FreeBSD's normalization of original mmap offsets remains a
 documented contract limitation. See the module documentation and
 [coverage matrix](tmp/REVIEW-coverage.md) for commands and remaining gaps.
 
