@@ -151,6 +151,7 @@ int main(int argc, char **argv)
         unsigned char changed = bytes[0] ^ 0x55, original;
         struct ptrace_io_desc io;
         for (kind = 0; kind < 2; kind++) {
+            changed = bytes[0] ^ 0x55;
             p = mmap(NULL, length, PROT_READ, kind ? MAP_PRIVATE : MAP_SHARED, fd, 0);
             assert(p != MAP_FAILED);
             child = fork(); assert(child >= 0);
