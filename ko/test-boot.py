@@ -63,8 +63,11 @@ for binary in [python, *libraries]:
     shutil.copy(binary, target)
 shutil.copy(builder, stage/'makefemtofs')
 
-for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'tmp', 'units', 'var/run'):
+for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'units', 'var/run'):
     (root/name).mkdir(parents=True, exist_ok=True)
+(root/'tmp').mkdir() if mode in ('control', 'audit') else (root/'tmp').symlink_to('/runtime/tmp')
+if mode not in ('control', 'audit'):
+    (stage/'tmp').mkdir()
 (root/'usr').symlink_to('/runtime/usr')
 for name in ('lib', 'libexec'):
     shutil.copytree(stage/name, root/name, copy_function=shutil.copy)
