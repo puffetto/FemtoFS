@@ -401,7 +401,7 @@ static int ff_mount(struct mount *mp)
         return error;
     }
     if (mp->mnt_flag & MNT_UPDATE) {
-        if (mp->mnt_flag & MNT_RDONLY) return 0;
+        if (vfs_flagopt(mp->mnt_optnew, "ro", NULL, 0)) return 0;
         vfs_mount_error(mp, "FemtoFS cannot become writable");
         return EROFS;
     }
