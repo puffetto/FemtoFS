@@ -96,7 +96,7 @@ static int ff_pathconf(struct vop_pathconf_args *ap)
     switch (ap->a_name) {
     case _PC_LINK_MAX: *ap->a_retval = 32767; return 0;
     case _PC_NAME_MAX: *ap->a_retval = 255; return 0;
-    case _PC_FILESIZEBITS: *ap->a_retval = 32; return 0;
+    case _PC_FILESIZEBITS: *ap->a_retval = 33; return 0;
     case _PC_SYMLINK_MAX: *ap->a_retval = MAXPATHLEN; return 0;
     case _PC_NO_TRUNC:
     case _PC_CHOWN_RESTRICTED: *ap->a_retval = 1; return 0;

@@ -28,7 +28,7 @@ int main(int argc, char **argv)
     assert(!statfs(argv[1], &fs) && fs.f_namemax == 255);
     assert(pathconf(argv[1], _PC_NAME_MAX) == 255);
     assert(pathconf(argv[1], _PC_LINK_MAX) == 32767);
-    assert(pathconf(argv[1], _PC_FILESIZEBITS) == 32);
+    assert(pathconf(argv[1], _PC_FILESIZEBITS) == 33);
     assert(pathconf(argv[1], _PC_SYMLINK_MAX) == MAXPATHLEN);
     assert(pathconf(argv[1], _PC_NO_TRUNC) == 1);
 #endif
