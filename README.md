@@ -20,7 +20,7 @@ goes the other way.
 It is built for:
 
 - read-only system images
-- RAM-backed mounts with `md(4)`-style workflows
+- Named resident image banks populated by the loader or synchronous imports
 - small, memory-friendly metadata
 - correct `uid`/`gid`/mode semantics for real system trees
 - deterministic lookup behavior
@@ -226,8 +226,8 @@ mappings. The resident-bank implementation replaces the historical md hooks:
 bootloader images are adopted without copying; `femtoctl add` copies files or
 devices into named RAM banks. Mount by label, unmount to retain, and explicitly
 discard unused banks. No md/GEOM/kernel patches or direct device mounts are part
-of this design. Asynchronous imports remain deferred. Implementation and stock
-kernel verification are in progress in `tmp/NODEV-execution.md`.
+of this design. Asynchronous imports remain deferred. Stock FreeBSD 15.1 root/control guest verification passes; commands and remaining
+coverage gaps are recorded in `tmp/NODEV-execution.md`.
 
 Image construction is offline work. Its efficiency matters, but deterministic
 output, safe publication, mounted lookup performance, and final image size have

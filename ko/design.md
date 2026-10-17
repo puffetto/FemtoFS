@@ -1,8 +1,8 @@
 # FemtoFS resident-bank design
 
 Implementation target: stock FreeBSD 15.1 amd64, without md or GEOM patches.
-This replaces the historical md-hook design below. Implementation/verification
-is in progress; see `tmp/NODEV-execution.md` for observed results.
+This replaces the historical md-hook design below. Stock-15.1 root/control verification passes; see `tmp/NODEV-execution.md` for
+observed results, tested revisions and explicitly unverified injection cases.
 
 A named bank owns one fully resident image and its validated decoded metadata.
 Loader images of type `femtofs_image` reuse their original allocation without

@@ -3,8 +3,9 @@
 Target: stock FreeBSD 15.1 amd64. The build guard accepts 1501000–1599999; later
 releases are not automatically verified. Dirty mode and 14.x are deferred.
 See [design.md](design.md) and [specification.md](../specification.md).
-Resident-bank implementation is undergoing native verification; results are in
-`tmp/NODEV-execution.md`. Previous patched-md results are historical.
+Resident banks pass stock FreeBSD 15.1 root and UFS-control guest verification.
+Results and remaining coverage gaps are in `tmp/NODEV-execution.md`; previous
+patched-md results are historical.
 
 ## Build and use
 
@@ -127,3 +128,25 @@ not establish runtime behavior; consult the execution log for actual results.
 Generic FreeBSD mount(8) sends the label in `from` directly; the module accepts
 that form without a `bank` option. The helper and root boot use empty `from` plus
 `bank=LABEL`. Conflicting selectors and device paths are rejected.
+
+## Verification recorded 17 October 2026
+
+Production changes through `36ce8c0` pass local FreeBSD-target compilation and
+13 portable decoder tests, native builds and stock-kernel QEMU root/control boots.
+Each boot passes 78 mmap probes, four 316-object mode/sector matrix combinations,
+10 malformed imports, tail reuse, nullfs, label mounting, import/discard races and
+passed-descriptor privilege checks. Source devices are detached before mounting
+the imported banks. Reversed loader order passes with the same bank identities.
+
+The sampled data mmap page matches the loader's physical address plus its image
+offset. Discarding the 61,440-byte preload increases VM-managed pages by exactly
+15 and removes its metadata record. The control guest discards all banks,
+unloads/reloads the module and confirms discarded banks stay absent.
+
+These tests do not inject allocator exhaustion, device read errors, malformed
+loader address records, or unload while an import is deliberately stalled.
+The resident cleanup and locking paths for those cases have source review, not
+runtime coverage. Other architectures, private COW/dynamic root and asynchronous
+imports remain outside this delivery. Root shutdown logs the existing unsupported
+forced-unmount error 45 before syncing and powering off; fixture/CTF diagnostics
+are retained in logs rather than presented as a warning-free run.
