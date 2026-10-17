@@ -268,7 +268,7 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     vm_prot_t prot, vm_prot_t capmax, int flags, vm_ooffset_t off, struct thread *td)
 {
     struct vnode *vp = fp->f_vnode;
-    vm_object_t obj;
+    vm_object_t obj, backing;
     vm_prot_t maxprot = VM_PROT_READ | VM_PROT_EXECUTE;
     int error;
     /* vm_mmap_object adds MAP_COPY_ON_WRITE for private mappings, including
@@ -286,11 +286,21 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     error = mac_vnode_check_mmap(td->td_ucred, vp, prot, flags);
     if (error) { vput(vp); return error; }
     /* The pager supplies immutable source pages; only VM shadow pages are writable. */
-    obj = cdev_pager_allocate(FN(vp), OBJT_DEVICE, &ff_pager, size,
+    backing = cdev_pager_allocate(FN(vp), OBJT_DEVICE, &ff_pager, size,
         prot & ~VM_PROT_WRITE, off, td->td_ucred);
     vput(vp);
-    if (!obj) return ENOMEM;
-    error = vm_mmap_object(map, addr, size, prot, maxprot, flags, obj, off, FALSE, td);
+    if (!backing) return ENOMEM;
+    /* Device superpage prefaults can install writable PTEs even for read-only
+     * or COW entries. An immutable, non-anonymous view forces ordinary faults
+     * through the backing pager; private writes get a separate charged shadow. */
+    obj = vm_object_allocate(OBJT_SWAP, OFF_TO_IDX(size));
+    VM_OBJECT_WLOCK(obj);
+    obj->backing_object_offset = off;
+    /* Transfer the device reference; non-anonymous backings have no shadow list. */
+    obj->backing_object = backing;
+    atomic_add_int((volatile u_int *)&backing->shadow_count, 1);
+    VM_OBJECT_WUNLOCK(obj);
+    error = vm_mmap_object(map, addr, size, prot, maxprot, flags, obj, 0, FALSE, td);
     if (error) vm_object_deallocate(obj);
     return error;
 }

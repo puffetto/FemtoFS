@@ -252,3 +252,14 @@ native verification. This design does not silently resolve those separate items.
 Generic FreeBSD mount(8) sends the label in `from` directly; the module accepts
 that form without a `bank` option. The helper and root boot use empty `from` plus
 `bank=LABEL`. Conflicting selectors and device paths are rejected.
+
+
+Review follow-up mapping safeguard: user mappings must not directly expose the
+OBJT_DEVICE bank pager. FreeBSD amd64's device superpage prefault path can install
+writable mappings without applying the entry's read-only/COW protection; a real
+2 MiB-aligned private mapping reproduced a bank write. Use an immutable,
+non-anonymous OBJT_SWAP view with the bank pager as its backing object. It holds
+no copied file pages; reads fault through to the bank. Private writes receive a
+separate VM-managed anonymous COW shadow with normal reservation/accounting.
+This also keeps shared read-only mappings out of the device prefault path.
+Test aligned private/shared mappings and MADV_WILLNEED explicitly.
