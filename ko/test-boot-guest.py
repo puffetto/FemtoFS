@@ -3,6 +3,8 @@
 # Created by Andrea "Nemesi" Cocito on 16/10/2026
 # Runs only inside the disposable FemtoFS root-boot guest.
 import concurrent.futures
+import errno
+import mmap
 import os
 from pathlib import Path
 import socket
@@ -38,7 +40,8 @@ assert data_size == data_image_size + 8192
 assert counter('loader_image_bytes') == root_size + data_image_size
 for old in ('borrowed_bytes', 'snapshot_bytes', 'borrowed_faults', 'released_pages'):
     refuse('sysctl', '-n', 'vfs.femtofs.'+old)
-print(f'FEMTOFS_BOOT banks loader={loader_total} owned=0', flush=True)
+print(f'FEMTOFS_BOOT banks loader_bytes={loader_total} '
+      f'loader_image_bytes={root_size + data_image_size} imported_bytes=0', flush=True)
 assert not subprocess.check_output(['mdconfig', '-l']).strip()
 mount = Path('/tmp/data'); mount.mkdir()
 ctl = '/femtoctl'
@@ -126,6 +129,25 @@ for mode in ('clean', 'leaking'):
     print(f'FEMTOFS_BOOT {mode}: original backing, mmap, lifetime, sendfile, cleanup passed', flush=True)
 
 assert all(denied), 'unprivileged bank mount succeeded with vfs.usermount=1'
+# Private writes must not bypass the separate execute restriction.
+run('/mount_femtofs', '-o', 'noexec', 'data', mount)
+with (mount/'file-4097').open('rb') as f:
+    original = f.read()
+    for flags in (mmap.MAP_PRIVATE, mmap.MAP_SHARED):
+        try:
+            mapping = mmap.mmap(f.fileno(), 4096, flags=flags, prot=mmap.PROT_READ | mmap.PROT_EXEC)
+        except OSError as error:
+            assert error.errno == errno.EACCES
+        else:
+            mapping.close()
+            raise AssertionError('noexec mapping accepted')
+    with mmap.mmap(f.fileno(), 4096, flags=mmap.MAP_PRIVATE,
+                   prot=mmap.PROT_READ | mmap.PROT_WRITE) as mapping:
+        mapping[0] ^= 0xff
+    f.seek(0)
+    assert f.read() == original
+run('umount', mount)
+print('FEMTOFS_BOOT noexec preserved; private writes leave read() unchanged', flush=True)
 # A fresh clean mount: the tail cache outlives process A and is reused by B.
 run('mount', mount)  # fstab -> standard mount helper dispatch
 before = counter('clean_pages')
@@ -222,6 +244,8 @@ run(ctl, 'discard', 'data')
 assert counter('loader_released_pages') == pages + data_size//4096
 managed_after = int(subprocess.check_output(['sysctl', '-n', 'vm.stats.vm.v_page_count']))
 assert managed_after - managed_before == data_size//4096, (managed_before, managed_after)
+print(f'FEMTOFS_BOOT loader discard reclaimed {managed_after - managed_before} pages '
+      f'for {len(raw)} logical / {data_size} retained bytes', flush=True)
 assert counter('loader_bytes') == root_size
 assert counter('loader_image_bytes') == root_size
 metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
