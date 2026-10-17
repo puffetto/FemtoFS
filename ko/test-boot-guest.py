@@ -44,6 +44,24 @@ for name in ('bad-header', 'bad-metadata'):
     refuse(ctl, 'add', 'invalid', '/runtime/boot/'+name+'.img')
 assert counter('borrowed_bytes') == loader_total and counter('snapshot_bytes') == 0
 raw = Path('/runtime/boot/data.img').read_bytes()
+# Even with usermount enabled, only an administrator may claim loader memory.
+user_mount = Path('/tmp/user-mount'); user_mount.mkdir()
+os.chown(user_mount, 65534, 65534)
+def nobody():
+    os.setgroups([]); os.setgid(65534); os.setuid(65534)
+old_usermount = subprocess.check_output(['sysctl', '-n', 'vfs.usermount']).strip().decode()
+denied = []
+try:
+    run('sysctl', 'vfs.usermount=1')
+    for command in (['/mount_femtofs', '-o', 'leaking', 'data', str(user_mount)],
+                    ['mount', '-t', 'femtofs', '-o', 'ro', 'data', str(user_mount)]):
+        result = subprocess.run(command, preexec_fn=nobody, capture_output=True, text=True)
+        denied.append(result.returncode != 0 and 'Operation not permitted' in result.stderr)
+        print(f'FEMTOFS_BOOT unprivileged mount denied={denied[-1]}: {result.stderr.strip()}', flush=True)
+        if result.returncode == 0:
+            run('umount', user_mount)
+finally:
+    run('sysctl', 'vfs.usermount='+old_usermount)
 u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
 files = {}
 for i in range(u32(56)):
@@ -98,6 +116,7 @@ for mode in ('clean', 'leaking'):
     assert counter('clean_bytes') == clean_before
     print(f'FEMTOFS_BOOT {mode}: original backing, mmap, lifetime, sendfile, cleanup passed', flush=True)
 
+assert all(denied), 'unprivileged bank mount succeeded with vfs.usermount=1'
 # A fresh clean mount: the tail cache outlives process A and is reused by B.
 run('mount', mount)  # fstab -> standard mount helper dispatch
 before = counter('clean_pages')

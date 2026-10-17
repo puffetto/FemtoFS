@@ -24,7 +24,7 @@ int main(int argc, char **argv)
     int fd, ef, kind, status;
     long page = sysconf(_SC_PAGESIZE);
     size_t length;
-    unsigned char *bytes, *p;
+    unsigned char *bytes, *p, *shared;
     pid_t child;
     assert(argc == 4);
     fd = open(argv[1], O_RDONLY); ef = open(argv[2], O_RDONLY);
@@ -50,13 +50,37 @@ int main(int argc, char **argv)
 #endif
     for (kind = 0; kind < 2; kind++) {
         int flags = kind ? MAP_PRIVATE : MAP_SHARED;
-        assert(mmap(NULL, page, PROT_READ | PROT_WRITE, flags, fd, 0) == MAP_FAILED);
+        p = mmap(NULL, length ? length : (size_t)page, PROT_READ | PROT_WRITE, flags, fd, 0);
+        if (!kind) assert(p == MAP_FAILED && errno == EACCES);
+        else {
+            if (p == MAP_FAILED) perror("private writable mmap");
+            assert(p != MAP_FAILED);
+            /* Write before reading: exercise a COW fault on an absent page. */
+            for (size_t i = 0; i < length; i += page) p[i] = bytes[i] ^ 0xff;
+            assert(!munmap(p, length ? length : (size_t)page));
+        }
         if (!length) continue;
         p = mmap(NULL, length, PROT_READ, flags, fd, 0);
         assert(p != MAP_FAILED && (uintptr_t)p % page == 0);
         assert(!memcmp(p, bytes, length));
-        assert(mprotect(p, length, PROT_READ | PROT_WRITE) == -1);
-        assert(!memcmp(p, bytes, length));
+        if (!kind) assert(mprotect(p, length, PROT_READ | PROT_WRITE) == -1);
+        else {
+            shared = mmap(NULL, length, PROT_READ, MAP_SHARED, fd, 0);
+            assert(shared != MAP_FAILED);
+            assert(!mprotect(p, length, PROT_READ | PROT_WRITE));
+            /* Include the partial tail and any permitted public spill. */
+            for (size_t i = 0; i < length; i++) p[i] ^= 0xff;
+            child = fork(); assert(child >= 0);
+            if (!child) {
+                for (size_t i = 0; i < length; i++) p[i] ^= 0x55;
+                assert(!memcmp(shared, bytes, length));
+                _exit(0);
+            }
+            assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+            for (size_t i = 0; i < length; i++) assert(p[i] == (unsigned char)(bytes[i] ^ 0xff));
+            assert(!memcmp(shared, bytes, length));
+            assert(!munmap(shared, length));
+        }
         assert(!munmap(p, length));
     }
     p = mmap(NULL, length + page, PROT_READ, MAP_SHARED, fd, 0);
@@ -77,7 +101,7 @@ int main(int argc, char **argv)
     assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
     assert(!munmap(p, length + page));
     free(bytes);
-    puts("mmap bytes, tails, protections, descriptor lifetime and EOF: passed");
+    puts("mmap bytes, tails, shared protection, private COW/fork, descriptor lifetime and EOF: passed");
     return 0;
 }
 // END File: ko/test-mmap.c

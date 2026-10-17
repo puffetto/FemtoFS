@@ -16,7 +16,8 @@ Registration precedes root mount. Labels are case-sensitive, 1–63 ASCII letter
 digits, underscores or hyphens. Original preload names must be unambiguous across
 all types, since deletion is by name. Invalid registrations preserve loader memory.
 
-`mount_femtofs LABEL DIRECTORY` claims a bank; only one independent mount is
+`mount_femtofs LABEL DIRECTORY` requires `PRIV_DRIVER`, matching bank control,
+regardless of `vfs.usermount`. It claims a bank; only one independent mount is
 allowed. Unmount releases mount state and clean copies, retaining the bank.
 `femtoctl discard LABEL` refuses claimed banks and otherwise frees decoded
 metadata and backing. Preloads use stock `preload_delete_name`; imported buffers
@@ -36,13 +37,23 @@ page cache belong to the mount. Pager references retain the mount claim until
 aliases disappear. A clean tail page is reused after an earlier process exits;
 unmount frees the cache. Bank byte accounting persists until discard.
 
+Private mappings permit writable protection and later write upgrades through
+FreeBSD's VM copy-on-write path. The backing pager remains read-only: writes go
+to anonymous shadow pages, preserving the bank and shared clean-tail cache.
+Shared mappings remain read-only. Dynamic init/shell and their shared libraries
+must run from the bank in acceptance tests.
+
+Counters distinguish loader/imported logical image bytes from retained allocation
+bytes. Loader fault/release counters name their origin explicitly; clean-page
+and decoded-metadata accounting remain separate from image storage and VM COW.
+
 Delivery sequence: update instructions/design, compile and test locally, commit
 and push, pull on toolbox, native build and disposable stock-kernel QEMU tests.
 Do not replace the host kernel. Acceptance includes root boot, file/device
 imports, retained remount, failure/race cleanup and measured preload reclamation.
 The detailed checklist is `tmp/NODEV-plan.md`. Private `fsck/` code is not accessed.
 
-Dirty mode, private writable/COW mappings, fully dynamic root, forced unmount,
+Dirty mode, forced unmount,
 NFS export, FreeBSD 14.x and alternate native architectures remain outside scope.
 Exec/sendfile can still use the ordinary vnode cache; direct mmap page reuse does
 not imply all file consumers avoid copies.

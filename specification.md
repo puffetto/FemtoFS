@@ -1131,7 +1131,12 @@ Symlink targets must always be in the private part.
 ## `mmap(2)` Contract by Mount Mode
 
 Common constraints:
-- Filesystem is read-only; writable mappings are rejected.
+- Filesystem storage is read-only. Shared writable mappings and shared write
+  protection upgrades are rejected.
+- Private mappings may be writable, initially or through a later protection
+  upgrade. Writes use process-private copy-on-write pages; the image and shared
+  clean-page cache remain immutable. Unmodified eligible pages still map directly.
+  File access, execute restrictions and security policy checks still apply.
 - Only regular files are mappable.
 - Alignment of mapping requests and VM mappings is measured against
   `VM_PAGE_SIZE`; packing and on-disk alignment are measured against
