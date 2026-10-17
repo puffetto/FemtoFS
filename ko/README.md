@@ -153,7 +153,8 @@ filesystem operations, and the converted 512/4096-sector import matrix. Only
 resources created by each run are cleaned up. Audit mode runs the aligned shared
 mapping security probe and first-touch timing from a UFS root, so it can also be
 used with a historical module that cannot host the current dynamic userspace.
-Private `fsck/` tests are not used.
+The independent `fsck/` implementation is not read or used to guide production
+changes. Its checker may be compiled and run as a black-box image verifier.
 
 Native arm64/alternate VM pages, active MAC policy execution, NFS export and forced
 unmount remain outside current native acceptance.
@@ -211,6 +212,10 @@ kernel panic or WITNESS diagnostic. A separate debug `root-smoke` run covers
 mountroot, a dynamic shell and its libraries from FemtoFS, and shutdown without
 auxiliary mount crossings. Read-only mount updates, rejected writable and policy
 changing updates, `statfs` and `pathconf` are part of the native matrix.
+
+The independent checker was compiled without inspecting its implementation. It
+accepted a fresh page-boundary/private-public/link/name-limit fixture and 11
+retained builder images, reporting zero errors for all 12 images.
 
 Not covered: allocator exhaustion, device read-error injection, malformed loader
 address records, unload during a deliberately stalled import, active MAC policy
