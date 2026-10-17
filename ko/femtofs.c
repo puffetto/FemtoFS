@@ -23,6 +23,7 @@
 #include <sys/stat.h>
 #include <sys/sx.h>
 #include <sys/sysctl.h>
+#include <sys/unistd.h>
 #include <sys/vnode.h>
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -89,6 +90,21 @@ static int ff_getattr(struct vop_getattr_args *ap)
     a->va_atime = a->va_mtime = a->va_ctime = a->va_birthtime = (struct timespec){0, 0};
     a->va_gen = 1; a->va_flags = 0; a->va_rdev = NODEV; a->va_filerev = 0;
     return 0;
+}
+static int ff_pathconf(struct vop_pathconf_args *ap)
+{
+    switch (ap->a_name) {
+    case _PC_LINK_MAX: *ap->a_retval = 32767; return 0;
+    case _PC_NAME_MAX: *ap->a_retval = 255; return 0;
+    case _PC_FILESIZEBITS: *ap->a_retval = 32; return 0;
+    case _PC_SYMLINK_MAX: *ap->a_retval = MAXPATHLEN; return 0;
+    case _PC_NO_TRUNC:
+    case _PC_CHOWN_RESTRICTED: *ap->a_retval = 1; return 0;
+    case _PC_PIPE_BUF:
+        if (ap->a_vp->v_type != VDIR && ap->a_vp->v_type != VFIFO) return EINVAL;
+        *ap->a_retval = PIPE_BUF; return 0;
+    default: return vop_stdpathconf(ap);
+    }
 }
 static int ff_open(struct vop_open_args *ap)
 {
@@ -227,10 +243,15 @@ static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t
     struct ff_mount *fs = vn->fs;
     struct ff_node *n = &fs->bank->image.nodes[vn->id];
     uint32_t source, copied;
+    int leaking;
     vm_offset_t address;
     vm_page_t page;
     (void)prot;
-    if (ff_page(&fs->bank->image, vn->id, offset, PAGE_SIZE, fs->leaking, &source, &copied)) return VM_PAGER_BAD;
+    leaking = fs->leaking && !mac_vnode_check_access_enabled() &&
+        !mac_vnode_check_lookup_enabled() && !mac_vnode_check_open_enabled() &&
+        !mac_vnode_check_mmap_enabled();
+    if (ff_page(&fs->bank->image, vn->id, offset, PAGE_SIZE, leaking,
+        &source, &copied)) return VM_PAGER_BAD;
     VM_OBJECT_WUNLOCK(object);
     address = (vm_offset_t)fs->bank->image.bytes + source;
     if (copied) {
@@ -326,6 +347,7 @@ static int ff_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
     *vn = (struct ff_vnode){vp, fs, id}; vp->v_data = vn;
     vp->v_type = IFTOVT(fs->bank->image.nodes[id].mode);
     if (vp->v_type == VFIFO) vp->v_op = &ff_fifoops;
+    else VN_LOCK_ASHARE(vp);
     if (ino == 1) vp->v_vflag |= VV_ROOT;
     lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
     error = insmntque(vp, mp);
@@ -345,6 +367,7 @@ static int ff_statfs(struct mount *mp, struct statfs *s)
     s->f_blocks = fs->bank->image.size / FF_PAGE;
     s->f_bfree = s->f_bavail = s->f_ffree = 0;
     s->f_files = fs->bank->image.objects + 1;
+    s->f_namemax = 255;
     return 0;
 }
 static void ff_free(struct ff_mount *fs)
@@ -373,21 +396,41 @@ static int ff_mount(struct mount *mp)
     char *from, *label;
     int error;
     /* Banks expose privileged loader memory, even when usermount is enabled. */
-    if ((error = priv_check(curthread, PRIV_DRIVER))) return error;
-    if (mp->mnt_flag & MNT_UPDATE) return EOPNOTSUPP;
-    if (vfs_filteropt(mp->mnt_optnew, opts)) return EINVAL;
-    if (vfs_flagopt(mp->mnt_optnew, "clean", NULL, 0) && vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) return EINVAL;
+    if ((error = priv_check(curthread, PRIV_DRIVER))) {
+        vfs_mount_error(mp, "administrator privilege required");
+        return error;
+    }
+    if (mp->mnt_flag & MNT_UPDATE) {
+        if (mp->mnt_flag & MNT_RDONLY) return 0;
+        vfs_mount_error(mp, "FemtoFS cannot become writable");
+        return EROFS;
+    }
+    if (vfs_filteropt(mp->mnt_optnew, opts)) {
+        vfs_mount_error(mp, "unsupported mount option");
+        return EINVAL;
+    }
+    if (vfs_flagopt(mp->mnt_optnew, "clean", NULL, 0) &&
+        vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) {
+        vfs_mount_error(mp, "clean and leaking are mutually exclusive");
+        return EINVAL;
+    }
     from = vfs_getopts(mp->mnt_optnew, "from", &error);
-    if (error) return error;
+    if (error) { vfs_mount_error(mp, "missing mount source"); return error; }
     label = vfs_getopts(mp->mnt_optnew, "bank", &error);
     /* Generic mount(8) supplies the label as from; root boot needs empty from
      * to avoid the kernel's device wait and supplies a separate bank option. */
     if (*from) {
-        if (error != ENOENT) return EINVAL;
+        if (error != ENOENT) {
+            vfs_mount_error(mp, "conflicting source and bank");
+            return EINVAL;
+        }
         label = from; error = 0;
     }
-    if (error) return error;
-    if ((error = ff_bank_claim(label, &bank))) return error;
+    if (error) { vfs_mount_error(mp, "missing bank label"); return error; }
+    if ((error = ff_bank_claim(label, &bank))) {
+        vfs_mount_error(mp, "cannot claim bank %s", label);
+        return error;
+    }
     fs = malloc(sizeof(*fs), M_FEMTOFS, M_WAITOK | M_ZERO);
     sx_init(&fs->cache_lock, "femtofs clean pages");
     fs->bank = bank;
@@ -397,7 +440,10 @@ static int ff_mount(struct mount *mp)
         mac_vnode_check_open_enabled() || mac_vnode_check_mmap_enabled()) fs->leaking = 0;
     fs->clean = malloc((size_t)bank->image.nblobs * sizeof(*fs->clean), M_FEMTOFS, M_WAITOK | M_ZERO);
     mp->mnt_data = fs;
-    MNT_ILOCK(mp); mp->mnt_flag |= MNT_RDONLY | MNT_LOCAL; MNT_IUNLOCK(mp);
+    MNT_ILOCK(mp);
+    mp->mnt_flag |= MNT_RDONLY | MNT_LOCAL;
+    mp->mnt_kern_flag |= MNTK_LOOKUP_SHARED | MNTK_EXTENDED_SHARED;
+    MNT_IUNLOCK(mp);
     vfs_getnewfsid(mp); vfs_mountedfrom(mp, label); ff_statfs(mp, &mp->mnt_stat);
     if (bootverbose) printf("femtofs: bank %s %s %u bytes at %p\n", label,
         bank->preload ? "preload" : "imported", bank->image.size, bank->image.bytes);
@@ -432,7 +478,7 @@ static struct vop_vector ff_vops = {
     .vop_getpages = vnode_pager_local_getpages,
     .vop_getpages_async = ff_getpages_async,
     .vop_bmap = ff_bmap,
-    .vop_setattr = ff_setattr, .vop_pathconf = vop_stdpathconf,
+    .vop_setattr = ff_setattr, .vop_pathconf = ff_pathconf,
     .vop_advise = VOP_NULL, /* The immutable image is already resident. */
 };
 VFS_VOP_VECTOR_REGISTER(ff_vops);

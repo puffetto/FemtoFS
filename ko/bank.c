@@ -57,11 +57,6 @@ static int valid_label(const char *s)
             (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '-')) return 0;
     return 1;
 }
-static u_long metadata_size(const struct ff_bank *b)
-{
-    return ((size_t)b->image.count + 1) * sizeof(struct ff_node) +
-        (size_t)b->image.count * 2 * sizeof(struct ff_blob);
-}
 static struct ff_bank *find_bank(const char *label)
 {
     sx_assert(&bank_lock, SA_XLOCKED);
@@ -76,7 +71,7 @@ static int publish(struct ff_bank *b)
     if (find_bank(b->label)) error = EEXIST;
     else {
         b->next = banks; banks = b; generation++;
-        metadata_bytes += metadata_size(b);
+        metadata_bytes += b->image.metadata_size;
         if (b->preload) {
             loader_bytes += b->extent; loader_image_bytes += b->image.size;
         } else {
@@ -180,6 +175,7 @@ static int bank_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int flags,
     if ((error = priv_check(td, PRIV_DRIVER))) return error;
     if (cmd != FF_BANK_ADD && cmd != FF_BANK_LIST && cmd != FF_BANK_DISCARD) return ENOTTY;
     if (r->version != FF_BANK_VERSION) return EINVAL;
+    if (r->reserved) return EINVAL;
     if (cmd != FF_BANK_LIST && !valid_label(r->label)) return EINVAL;
     if (cmd == FF_BANK_ADD && !memchr(r->source, 0, sizeof(r->source))) return EINVAL;
     sx_xlock(&bank_lock);
@@ -220,7 +216,7 @@ static int bank_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int flags,
         else if (b->claimed) error = EBUSY;
         else {
             *link = b->next; generation++;
-            metadata_bytes -= metadata_size(b);
+            metadata_bytes -= b->image.metadata_size;
             if (b->preload) {
                 loader_bytes -= b->extent; loader_image_bytes -= b->image.size;
             } else {

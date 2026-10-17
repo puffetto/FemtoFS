@@ -2129,7 +2129,7 @@ void writeImage(int fd, ImagePlan& plan, const Spool& spool, bool device)
         try {
             verifyImage(fd, plan, spool, "full", true);
             observed = "current intended image passes full verification";
-        } catch (const Error& verificationError) {
+        } catch (const std::exception& verificationError) {
             observed = "current image could not be verified: " +
                        std::string(verificationError.what());
         }
@@ -2241,7 +2241,7 @@ void verifyZeroHoles(int fd, const ImagePlan& plan, bool pageIo)
 
     std::array<uint8_t, 64 * 1024> buffer{};
     uint32_t cursor = 0;
-    for (const auto [begin, end] : occupied) {
+    for (const auto& [begin, end] : occupied) {
         if (begin > cursor) {
             uint32_t offset = cursor;
             while (offset < begin) {

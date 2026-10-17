@@ -37,6 +37,9 @@ for size in (0, 1, 4095, 4096, 4097, 8192, 10000):
 (source / 'hidden').mkdir(mode=0o700)
 (source / 'hidden' / 'promoted').write_bytes(b'promoted')
 (source / 'hidden' / 'promoted').chmod(0o644)
+(source / 'deep/a/b/c').mkdir(parents=True)
+(source / 'deep/a/b/c/file').write_bytes(b'deep')
+(source / ('n' * 255)).write_bytes(b'name-max')
 os.link(source / 'hidden' / 'promoted', source / 'visible')
 os.link(source / 'file-4097', source / 'hardlink')
 (source / 'symlink').symlink_to('file-4097')
@@ -48,6 +51,7 @@ run(builder, '--temp-dir', base, source, image)
 raw = image.read_bytes()
 u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
 root, rootsize, private = u32(52), u32(56), u32(44)
+assert raw[66] >> 6 == 1, 'mounted fixture did not select dual-hash lookup'
 files = {}
 for i in range(rootsize):
     b = 128 + (root+i)*16
@@ -64,6 +68,7 @@ label = "matrix"
 banked = False
 unit = None
 mounted = False
+success = False
 try:
     empty = base / 'empty'
     empty.mkdir()
@@ -109,13 +114,16 @@ try:
         unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(image), '-S', str(sector)]).decode().strip()
         assert unit.startswith('md') and unit[2:].isdigit()
         device = '/dev/' + unit
-        bad = subprocess.run([str(helper), '-o', 'dirty', device, str(mountpoint)], capture_output=True)
-        assert bad.returncode != 0, 'deferred dirty mode was accepted'
         run(ctl, 'add', label, device); banked = True
+        bad = subprocess.run([str(helper), '-o', 'dirty', label, str(mountpoint)], capture_output=True)
+        assert bad.returncode != 0, 'deferred dirty mode was accepted'
         run('mdconfig', '-d', '-u', unit); unit = None
         for mode in ('clean', 'leaking'):
             run(helper, '-o', mode, label, mountpoint)
             mounted = True
+            run('mount', '-u', '-o', 'ro', mountpoint)
+            bad = subprocess.run(['mount', '-u', '-o', 'rw', mountpoint], capture_output=True)
+            assert bad.returncode != 0, 'read-only filesystem accepted a writable update'
             run(probe.with_name('test-directory'), mountpoint)
             seen = 0
             for original in [source, *source.rglob('*')]:
@@ -199,6 +207,7 @@ for path in ('private', 'hidden/promoted'):
             run('umount', mountpoint); mounted = False
             print(f'{mode}, sector={sector}: {seen} objects; metadata, reads, names, FIFO, concurrency and mmap passed', flush=True)
         run(ctl, 'discard', label); banked = False
+    success = True
 finally:
     # Preserve artifacts if cleanup fails; never detach a still-mounted provider.
     if mounted:
@@ -207,5 +216,8 @@ finally:
         run(ctl, 'discard', label)
     if unit:
         run('mdconfig', '-d', '-u', unit)
+    if not success:
+        print(f'failed test artifacts preserved in {base}', file=sys.stderr, flush=True)
+if success:
     shutil.rmtree(base)
 # END File: ko/test-mount.py

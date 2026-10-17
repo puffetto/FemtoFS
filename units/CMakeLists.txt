@@ -44,7 +44,7 @@ foreach(test_src IN LISTS UNIT_TEST_SOURCES)
     if (test_name MATCHES "^test-(makefemtofs|builder-plan)$")
         target_link_libraries(${test_name} PRIVATE LibArchive::LibArchive)
         target_compile_definitions(${test_name} PRIVATE
-            REVIEW_TEST_ROOT="${CMAKE_BINARY_DIR}")
+            FEMTOFS_TEST_ROOT="${CMAKE_BINARY_DIR}")
         target_compile_options(${test_name} PRIVATE -Wall -Wextra -Wpedantic)
     endif ()
 

@@ -23,6 +23,9 @@ int main(int argc, char **argv)
     r.version++;
     assert(ioctl(c, FF_BANK_LIST, &r) == -1 && errno == EINVAL);
     r.version = FF_BANK_VERSION;
+    r.reserved = 1;
+    assert(ioctl(c, FF_BANK_LIST, &r) == -1 && errno == EINVAL);
+    r.reserved = 0;
     memset(r.label, 'x', sizeof(r.label));
     assert(ioctl(c, FF_BANK_DISCARD, &r) == -1 && errno == EINVAL);
     strcpy(r.label, "probe");

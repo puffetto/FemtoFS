@@ -170,6 +170,8 @@ int ff_validate(struct ff_image *im)
     int error = EINVAL, dual = 0;
     if (ff_u32(h + 32) != im->size || ff_header(h, im->size, im) ||
         ff_fnv(h + 128, im->count * 16) != ff_u32(h + 12)) return EINVAL;
+    im->metadata_size = ((size_t)im->count + 1) * sizeof(*im->nodes) +
+        (size_t)im->count * 2 * sizeof(*im->blobs);
     im->nodes = alloc(im->count + 1, sizeof(*im->nodes));
     im->blobs = alloc(im->count * 2, sizeof(*im->blobs));
     w = alloc(im->count, sizeof(*w));
@@ -307,6 +309,7 @@ void ff_destroy(struct ff_image *im)
 {
     release(im->nodes); release(im->blobs);
     im->nodes = NULL; im->blobs = NULL; im->objects = im->nblobs = 0;
+    im->metadata_size = 0;
 }
 
 int ff_lookup(const struct ff_image *im, uint32_t dir, const char *name, size_t len, uint32_t *id)

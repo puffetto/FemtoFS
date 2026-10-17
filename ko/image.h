@@ -33,6 +33,7 @@ struct ff_blob {
 struct ff_image {
     const uint8_t *bytes;
     uint32_t size, count, public_off, private_off, hash2, objects;
+    size_t metadata_size;
     struct ff_node *nodes; /* Root is nodes[count]; unused cells have type 0. */
     struct ff_blob *blobs;
     uint32_t nblobs;

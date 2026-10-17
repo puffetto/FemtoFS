@@ -49,6 +49,18 @@ int main(int argc, char **argv)
 #ifdef __FreeBSD__
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED));
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
+    if (st.st_size >= 2 * page) {
+        unsigned char original;
+        p = mmap(NULL, page, PROT_READ, MAP_SHARED, fd, page);
+        assert(p != MAP_FAILED && !memcmp(p, bytes + page, page));
+        assert(!munmap(p, page));
+        p = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, page);
+        assert(p != MAP_FAILED);
+        p[0] ^= 0xff;
+        assert(pread(fd, &original, 1, page) == 1 && original == bytes[page]);
+        assert(!munmap(p, page));
+        puts("nonzero-offset partial shared/private mappings: passed");
+    }
     if (argc == 5) {
         struct timespec begin, end;
         volatile unsigned long sum = 0;

@@ -240,7 +240,7 @@ struct Fixture {
     struct stat inputStatus{};
     Fixture()
     {
-        std::string pattern = std::string(REVIEW_TEST_ROOT) + "/builder.XXXXXX";
+        std::string pattern = std::string(FEMTOFS_TEST_ROOT) + "/builder.XXXXXX";
         std::vector<char> path(pattern.begin(), pattern.end());
         path.push_back(0);
         if (!::mkdtemp(path.data())) throw std::runtime_error("mkdtemp test fixture");

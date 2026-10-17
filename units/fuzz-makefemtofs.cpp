@@ -9,14 +9,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 {
     if (size < 2 || size > 4096) return 0;
     try {
-#ifdef REVIEW_FUZZ_paths
+#ifdef FEMTOFS_FUZZ_PATHS
         const std::string path(reinterpret_cast<const char*>(data + 2), size - 2);
         const bool directory = (data[0] & 1) != 0;
         const auto normalized = normalizeArchivePath(path, directory, data[1] % 8);
         if (normalizeArchivePath(normalized, directory, 0) != normalized)
             std::abort();
 #else
-        static Spool spool(REVIEW_TEST_ROOT);
+        static Spool spool(FEMTOFS_TEST_ROOT);
         Options options;
         options.uuid = std::array<uint8_t, 16>{};
         InputTree tree;

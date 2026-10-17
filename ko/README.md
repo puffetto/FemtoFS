@@ -4,8 +4,8 @@ Target: stock FreeBSD 15.1 amd64. The build guard accepts 1501000–1599999; lat
 releases are not automatically verified. Dirty mode and 14.x are deferred.
 See [design.md](design.md) and [specification.md](../specification.md).
 Resident banks pass stock FreeBSD 15.1 root and UFS-control guest verification.
-Results and remaining coverage gaps are in `tmp/NODEV-execution.md`; previous
-patched-md results are historical.
+Verified results and remaining limits are summarized below; previous patched-md
+results are historical and remain available in Git history.
 
 ## Build and use
 
@@ -13,7 +13,7 @@ Run portable checks locally, commit/push, then pull and build on FreeBSD:
 
 ```sh
 make -f ko/Makefile.host
-python3 ko/test-image.py tmp/notes-audit-build/makefemtofs tmp/ko-host/check-image tmp/ko-host
+python3 ko/test-image.py build/makefemtofs tmp/ko-host/check-image tmp/ko-host
 ```
 
 Native build against matching stock sources, with output kept under `tmp/`:
@@ -38,6 +38,9 @@ a GEOM disk. Devices must have compatible read alignment. Source references are
 released after import; later changes/detach cannot affect the bank. Use a quiescent
 source for a coherent snapshot during copying. Allocation failure returns ENOMEM.
 Asynchronous imports are not implemented and are never silently copied.
+The `SUPPLIED_SOURCE` list column is the path string supplied by `femtoctl`; the
+descriptor passed to the kernel is authoritative and may refer to the same object
+through a different path.
 
 Labels contain 1–63 ASCII letters, digits, underscores or hyphens. Mounts accept
 labels only; direct device mounts and the old fallback path are removed. The
@@ -126,10 +129,10 @@ rejection of the original offset remains an unresolved contract limitation.
 Use a stock boot tree and matching source tree. No host reboot or boot installation:
 
 ```sh
-python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-root
-python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-control control
-python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-reverse reverse
-python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-audit audit
+python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-root
+python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-control control
+python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-reverse reverse
+python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-audit audit
 ```
 
 The harness builds module/static tools, boots QEMU without networking, and keeps

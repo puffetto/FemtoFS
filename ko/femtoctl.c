@@ -45,7 +45,7 @@ int main(int argc, char **argv)
             if (!next) err(1, "list allocation");
             rows = next; rows[count++] = r; r.index++;
         }
-        puts("LABEL\tORIGIN\tBYTES\tALLOCATED\tSTATE\tUUID\tSOURCE");
+        puts("LABEL\tORIGIN\tBYTES\tALLOCATED\tSTATE\tUUID\tSUPPLIED_SOURCE");
         for (size_t i = 0; i < count; i++) {
             r = rows[i];
             printf("%s\t%s\t%llu\t%llu\t%s\t", r.label,
