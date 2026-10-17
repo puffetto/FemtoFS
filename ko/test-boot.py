@@ -35,7 +35,7 @@ for name in ('loader', 'loader_lua', 'lua', 'defaults'):
     else:
         shutil.copy(base/name, stage/'boot'/name)
 (stage/'boot/kernel').mkdir()
-for name in ('kernel', 'tmpfs.ko', 'nullfs.ko'):
+for name in ('kernel',):
     shutil.copy(base/'kernel'/name, stage/'boot/kernel'/name)
 env = dict(os.environ, MAKEOBJDIR=str(build))
 run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', env=env)
@@ -74,6 +74,7 @@ os.link(root/'rescue/rescue', root/'bin/sh')
 os.link(root/'rescue/rescue', root/'bin/echo')
 os.link(root/'rescue/rescue', root/'sbin/init')
 os.link(root/'rescue/rescue', root/'sbin/mount')
+os.link(root/'rescue/rescue', root/'sbin/mount_nullfs')
 shutil.copy('/etc/login.conf', root/'etc/login.conf')
 shutil.copy('/var/run/ld-elf.so.hints', root/'var/run/ld-elf.so.hints')
 (root/'etc/fstab').write_text('data /tmp/data femtofs ro,clean 0 0\n')
@@ -123,8 +124,7 @@ raw[0] ^= 128; raw[12] ^= 128
 # Use explicit labels; reverse loading order in a separate acceptance boot.
 (stage/'boot/lua/loader.lua').chmod(0o644)
 commands = ['set console=comconsole', 'set comconsole_speed=115200',
-            'load /boot/kernel/kernel', 'load /boot/kernel/tmpfs.ko',
-            'load /boot/kernel/nullfs.ko', 'load /boot/kernel/femtofs.ko']
+            'load /boot/kernel/kernel', 'load /boot/kernel/femtofs.ko']
 order = ['root', 'data', 'bad-header', 'bad-metadata']
 if mode == 'reverse':
     order.reverse()
@@ -165,6 +165,10 @@ preloads = {label: address for label, address in re.findall(
     r'femtofs: preload (\S+) <[^>]+> \d+ bytes at (0x[0-9a-f]+)', output)}
 mounted = re.findall(r'femtofs: bank (\S+) preload \d+ bytes at (0x[0-9a-f]+)', output)
 assert 'data' in preloads and 'root' in preloads
+loader_addresses = dict((name, int(address, 16)) for address, name in re.findall(
+    r'(0x[0-9a-f]+): /boot/(root|data).img \(femtofs_image,', output))
+assert all(int(address, 16) == 0xffffffff80000000 + loader_addresses[label]
+           for label, address in preloads.items())
 assert all(address == preloads[label] for label, address in mounted)
 assert 'data' in {label for label, _ in mounted}
 if mode != 'control':
