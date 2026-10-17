@@ -104,7 +104,7 @@ for name in ('test-mount.py', 'test-boot-guest.py'):
 (root/'etc/rc').write_text('''#!/bin/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
 /bin/echo "FEMTOFS_BOOT dynamic shell before runtime: $(/bin/cat /identity)"
-if [ "$(cat /etc/guest-mode)" != control ]; then
+if [ "$(cat /etc/guest-mode)" != control ] && [ "$(cat /etc/guest-mode)" != audit ]; then
     mount -t ufs -o ro /dev/ada0p2 /runtime || exit 1
 fi
 mount -t tmpfs -o mode=1777 tmpfs /tmp || exit 1
@@ -149,13 +149,13 @@ for name in order:
     commands += [f'load -t femtofs_image /boot/{name}.img',
                  f'set femtofs.bank.{name}=/boot/{name}.img']
 commands += ['lsmod', 'set vfs.root.mountfrom=' +
-             ('ufs:/dev/ada0p2' if mode == 'control' else 'femtofs:'),
-             'set vfs.root.mountfrom.options=ro,clean,bank=root' if mode != 'control'
+             ('ufs:/dev/ada0p2' if mode in ('control', 'audit') else 'femtofs:'),
+             'set vfs.root.mountfrom.options=ro,clean,bank=root' if mode not in ('control', 'audit')
              else 'set vfs.root.mountfrom.options=ro', 'boot -v']
 import json
 (stage/'boot/lua/loader.lua').write_text('require("cli")\n' + ''.join(
     f'loader.perform({json.dumps(command)})\n' for command in commands))
-if mode == 'control':
+if mode in ('control', 'audit'):
     # Keep the dynamic runtime already in stage; make /runtime refer to this root.
     for child in root.iterdir():
         if child.name in ('usr', 'lib', 'libexec', 'runtime'):
@@ -166,7 +166,7 @@ if mode == 'control':
         elif not target.exists():
             shutil.copy(child, target, follow_symlinks=False)
     (stage/'runtime').symlink_to('/')
-run('makefs', '-t', 'ffs', '-s', '1g' if mode == 'control' else '512m',
+run('makefs', '-t', 'ffs', '-s', '1g' if mode in ('control', 'audit') else '512m',
     '-o', 'version=2', work/'root.ufs', stage)
 run('mkimg', '-s', 'gpt', '-b', '/boot/pmbr', '-p', 'freebsd-boot:=/boot/gptboot',
     '-p', f'freebsd-ufs:={work}/root.ufs', '-o', work/'guest.img')
@@ -192,7 +192,7 @@ samples = re.findall(r'femtofs: page data offset (\d+) physical (0x[0-9a-f]+)', 
 assert samples and int(samples[0][1], 16) == loader_addresses['data'] + int(samples[0][0])
 assert all(address == preloads[label] for label, address in mounted)
 assert 'data' in {label for label, _ in mounted}
-if mode != 'control':
+if mode not in ('control', 'audit'):
     assert 'root' in {label for label, _ in mounted}
 print(f'PASS: FemtoFS {mode} boot, bank lifecycle/import regressions; {work}/console.log')
 # END File: ko/test-boot.py
