@@ -40,6 +40,9 @@ for size in (0, 1, 4095, 4096, 4097, 8192, 10000):
 (source / 'deep/a/b/c').mkdir(parents=True)
 (source / 'deep/a/b/c/file').write_bytes(b'deep')
 (source / ('n' * 255)).write_bytes(b'name-max')
+(source / 'dual').mkdir()
+for name in (Path(__file__).resolve().parent.parent / 'units/dual-hash-names.txt').read_text().splitlines():
+    (source / 'dual' / name).write_bytes(b'dual')
 os.link(source / 'hidden' / 'promoted', source / 'visible')
 os.link(source / 'file-4097', source / 'hardlink')
 (source / 'symlink').symlink_to('file-4097')
@@ -51,7 +54,8 @@ run(builder, '--temp-dir', base, source, image)
 raw = image.read_bytes()
 u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
 root, rootsize, private = u32(52), u32(56), u32(44)
-assert raw[66] >> 6 == 1, 'mounted fixture did not select dual-hash lookup'
+assert u32(68) and any(raw[128 + i*16] == 2 and raw[129 + i*16] >> 6 == 1
+                       for i in range(u32(36))), 'mounted fixture has no dual-hash directory'
 files = {}
 for i in range(rootsize):
     b = 128 + (root+i)*16

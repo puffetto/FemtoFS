@@ -63,7 +63,7 @@ for binary in [python, *libraries]:
     shutil.copy(binary, target)
 shutil.copy(builder, stage/'makefemtofs')
 
-for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'tmp', 'var/run'):
+for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'tmp', 'units', 'var/run'):
     (root/name).mkdir(parents=True, exist_ok=True)
 (root/'usr').symlink_to('/runtime/usr')
 for name in ('lib', 'libexec'):
@@ -100,6 +100,7 @@ run('pwd_mkdb', '-p', '-d', root/'etc', root/'etc/master.passwd')
 for name in ('test-mount.py', 'test-boot-guest.py'):
     ast.parse((repo/'ko'/name).read_text())
     shutil.copy(repo/'ko'/name, root/name)
+shutil.copy(repo/'units/dual-hash-names.txt', root/'units/dual-hash-names.txt')
 (root/'identity').write_text('FemtoFS root\n')
 (root/'etc/rc').write_text('''#!/bin/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
