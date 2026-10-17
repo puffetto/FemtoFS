@@ -292,6 +292,10 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     vm_object_t obj, backing;
     vm_prot_t maxprot = VM_PROT_READ | VM_PROT_EXECUTE;
     int error;
+    /* A stacking filesystem leaves its vnode in f_vnode after forwarding
+     * VOP_OPEN.  Let its ordinary vnode object handle that view. */
+    if (vp->v_op != &ff_vops)
+        return vnops.fo_mmap(fp, map, addr, size, prot, capmax, flags, off, td);
     /* vm_mmap_object adds MAP_COPY_ON_WRITE for private mappings, including
      * initially read-only mappings that later gain write permission. */
     if (!(flags & MAP_SHARED)) {

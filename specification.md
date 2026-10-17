@@ -8,9 +8,10 @@ The aim is to provide a filesystem image format optimal for booting a "firmware-
 FreeBSD system in a highly resource-constrained environment.
 
 femtoFS is designed for:
-- FreeBSD 14+, amd64 and arm64 kernels.
+- The currently verified FreeBSD 15.1 amd64 kernel module. The format retains
+  portability hooks, but 14.x and arm64 ports are deferred.
 - Read-only mounts.
-- RAM-backed images (`md(4)` workflow).
+- Named resident image banks populated by the loader or synchronous imports.
 - Fast O(1) lookup by hashed directory entries.
 - Near-zero-copy `mmap(2)`.
 
@@ -32,6 +33,9 @@ Hard limits:
   and an occupied bucket cell, so the `< 2^16` shared-table limit imposes this
   bound even before attribute cells and empty hash buckets are counted.
 - Entries in a single directory `< 2^15`.
+- The complete image remains resident in wired memory for the lifetime of its
+  bank; this is a format for trimmed appliance images, not a full base-system
+  installation.
 
 Near-zero-copy `mmap(2)` is exposed through three mount modes:
 - `dirty`: superset of `leaking` for small public files. For files in the

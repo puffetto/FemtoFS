@@ -344,6 +344,14 @@ class BuilderCLI(unittest.TestCase):
         missing = self.archive([('missing/a', 'file', b'a')])
         self.image(self.build(missing, '--synthesize-dirs'))
 
+    def test_mtree_is_rejected(self):
+        payload = self.root / 'payload'
+        payload.write_bytes(b'not empty')
+        source = self.root / 'METALOG'
+        source.write_text('./payload type=file mode=0644 contents=' + str(payload) + '\n')
+        output = self.build(source, error='mtree/METALOG input is unsupported')
+        self.assertFalse(output.exists())
+
     def test_empty_hardlink_group(self):
         source = self.archive([('a', 'link', 'b'), ('b', 'link', 'a')])
         self.image(self.build(source))

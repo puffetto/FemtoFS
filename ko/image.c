@@ -169,6 +169,7 @@ int ff_validate(struct ff_image *im)
     const uint8_t **attrs = NULL, *h = im->bytes;
     int error = EINVAL, dual = 0;
     if (ff_u32(h + 32) != im->size || ff_header(h, im->size, im) ||
+        ff_fnv(h + 16, im->size - 16) != ff_u32(h + 8) ||
         ff_fnv(h + 128, im->count * 16) != ff_u32(h + 12)) return EINVAL;
     im->metadata_size = ((size_t)im->count + 1) * sizeof(*im->nodes) +
         (size_t)im->count * 2 * sizeof(*im->blobs);

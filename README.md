@@ -95,12 +95,15 @@ like a deployable artifact instead of a tiny database.
 
 ## Design Snapshot
 
-- Target platforms: FreeBSD 14+, `amd64` and `arm64` (this is our "Tier 1", plugs are there for portability)
+- Current kernel-module target: FreeBSD 15.1 `amd64`; 14.x and `arm64` are
+  future ports and have not been verified
 - Mode: read-only
 - Image size limit: `< 2^32` bytes
 - Metadata-table cell limit: `< 2^16`
-- Non-root visible-object limit: `< 2^15`
+- Non-root visible-object limit: at most 32,767, for a trimmed appliance tree
 - Per-directory entry limit: `< 2^15`
+- Runtime storage: the complete image remains in wired RAM for the lifetime of
+  its resident bank
 - Root directory metadata stored directly in the header
 - Full Unix metadata carried through deduplicated attribute cells:
   `uid`, `gid`, and complete `st_mode`
@@ -260,6 +263,15 @@ Create an image from a directory or archive:
 ```sh
 build/makefemtofs input-directory output.img
 build/makefemtofs input.tar.zst output.img
+```
+
+Raw mtree/METALOG input is rejected because it does not reliably carry regular-
+file payloads and can otherwise silently encode empty files. Convert a FreeBSD
+`METALOG` to an archive that carries both metadata and payloads first:
+
+```sh
+bsdtar -cf root.tar @METALOG
+build/makefemtofs root.tar root.0fs
 ```
 
 Run `makefemtofs --help` for reproducible UUIDs, archive path stripping,

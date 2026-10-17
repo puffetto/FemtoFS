@@ -75,7 +75,47 @@ boot
 
 Stock rc defaults `root_rw_mount` to `YES` and aborts startup when its
 `mount -uw /` fails. A FemtoFS root must set `root_rw_mount="NO"` in
-`/etc/rc.conf`.
+`/etc/rc.conf`. Every vnode timestamp is the Unix epoch by format design, so
+timestamp-driven tools such as `make` and `find -newer` see an epoch tree.
+
+A persistent installation can encode the same setup in `loader.conf`:
+
+```text
+femtofs_load="YES"
+root_load="YES"
+root_type="femtofs_image"
+root_name="/boot/root.0fs"
+femtofs.bank.root="/boot/root.0fs"
+vfs.root.mountfrom="femtofs:"
+vfs.root.mountfrom.options="ro,clean,bank=root"
+```
+
+The image must contain `/dev`, `/tmp`, `/var` and the `/boot/kernel` modules
+matching the running kernel. Its `fstab` entry for `/` must use fsck pass 0.
+This is a candidate minimum `rc.conf` profile for stock rc:
+
+```text
+root_rw_mount="NO"
+varmfs="YES"
+populate_var="YES"
+tmpmfs="YES"
+entropy_file="/var/db/entropy-file"
+entropy_dir="/var/db/entropy"
+dumpdev="NO"
+```
+
+An accompanying root entry is `root / femtofs ro,clean 0 0`; do not also put
+`/var` and `/tmp` in `fstab` when rc creates them through `varmfs` and `tmpmfs`.
+Host identity and SSH host keys must be provisioned deliberately; keys which
+identify the appliance cannot be generated afresh on a read-only `/etc`. Stock
+multi-user rc boot with this complete profile remains a beta acceptance test
+rather than a verified configuration.
+
+If bank registration or root validation fails, the kernel logs the reason and
+mountroot eventually enters its console prompt. Set `vfs.mountroot.timeout` to
+the appliance's desired recovery delay. A recovery root needs its own loader
+selection because the FemtoFS `bank=root` mount option cannot be reused for an
+unrelated filesystem in a simple mountfrom list.
 
 The environment maps labels to exact loader-recorded names, consumed on module
 initialization. Names must be unique across preload types and allocations cannot
@@ -91,7 +131,10 @@ bank cannot be remounted unless populated again. No md/GEOM/kernel patch is need
 
 Eligible mmap pages alias bank physical pages. Partial clean tails and unaligned
 file pages are copied lazily, zero-filled and shared by stored blob/page within
-the mount. The cache persists after a process exits. `leaking` exposes only public
+the mount. The cache persists after a process exits and is bounded by one 4 KiB
+page per distinct stored file page needing cleanup: at the 32,767-object format
+limit its loose upper bound is about 128 MiB. Monitor current use with
+`vfs.femtofs.clean_bytes`. `leaking` exposes only public
 spill; private payloads use clean behavior. Larger VM pages and active MAC policies
 force clean behavior. `fadvise` is a hint; current backing is already resident.
 
@@ -122,8 +165,9 @@ vnode references keep mounts/banks alive after fd close. Busy/forced unmounts ar
 refused. Exec/sendfile can use the ordinary vnode cache; direct mmap does not make
 all consumers zero-copy. Clean/leaking tail rules apply to private mappings too.
 
-Validation includes structural checks, metadata hash, terminators, overlaps,
-visibility and reachability. Optional whole-image hash and global canonical-byte
+Validation includes structural checks, metadata and whole-image hashes,
+terminators, overlaps, visibility and reachability. The FNV hashes detect
+accidental corruption; they do not authenticate an image. Global canonical-byte
 checks remain omitted. Unknown compatible metadata extensions are ignored.
 Original unaligned mmap offsets are normalized by FreeBSD before filesystem entry;
 rejection of the original offset remains an unresolved contract limitation.

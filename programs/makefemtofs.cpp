@@ -145,6 +145,7 @@ void printUsage(std::ostream& out)
 {
     out <<
         "usage: makefemtofs [options] INPUT OUTPUT\n"
+        "  INPUT may be a directory or non-mtree archive\n"
         "  -f, --force                 replace an existing regular file\n"
         "      --device                authorize a raw device output\n"
         "      --dry-run               plan and validate without writing\n"
@@ -788,6 +789,11 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
         if (status == ARCHIVE_EOF)
             break;
         checkArchiveStatus(input.get(), status, "reading archive header");
+        if ((archive_format(input.get()) & ARCHIVE_FORMAT_BASE_MASK) ==
+            ARCHIVE_FORMAT_MTREE) {
+            throw Error("mtree/METALOG input is unsupported; convert it with "
+                        "bsdtar -cf root.tar @METALOG");
+        }
         const char* raw = archive_entry_pathname(entry);
         if (raw == nullptr)
             throw Error("archive entry has no pathname");

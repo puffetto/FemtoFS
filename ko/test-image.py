@@ -25,6 +25,10 @@ def rehash(b):
     for byte in b[128:128 + u32(b, 48)]:
         h = ((h * 0x01000193) & 0xffffffff) ^ byte
     put(b, 12, h)
+    h = 0x811c9dc5
+    for byte in b[16:]:
+        h = ((h * 0x01000193) & 0xffffffff) ^ byte
+    put(b, 8, h)
 
 class Images(unittest.TestCase):
     @classmethod
@@ -108,6 +112,12 @@ class Images(unittest.TestCase):
 
     def test_metadata_hash(self):
         b = bytearray(self.good); b[12] ^= 1
+        self.check(b, checksum=False)
+
+    def test_image_hash(self):
+        b = bytearray(self.good); b[8] ^= 1
+        self.check(b, checksum=False)
+        b = bytearray(self.good); b[-1] ^= 1
         self.check(b, checksum=False)
 
     def test_bucket_and_chains(self):
