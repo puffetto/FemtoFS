@@ -35,7 +35,7 @@ for name in ('loader', 'loader_lua', 'lua', 'defaults'):
     else:
         shutil.copy(base/name, stage/'boot'/name)
 (stage/'boot/kernel').mkdir()
-for name in ('kernel',):
+for name in ('kernel', 'nullfs.ko'):
     shutil.copy(base/'kernel'/name, stage/'boot/kernel'/name)
 env = dict(os.environ, MAKEOBJDIR=str(build))
 run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', env=env)
@@ -124,7 +124,8 @@ raw[0] ^= 128; raw[12] ^= 128
 # Use explicit labels; reverse loading order in a separate acceptance boot.
 (stage/'boot/lua/loader.lua').chmod(0o644)
 commands = ['set console=comconsole', 'set comconsole_speed=115200',
-            'load /boot/kernel/kernel', 'load /boot/kernel/femtofs.ko']
+            'load /boot/kernel/kernel', 'load /boot/kernel/nullfs.ko',
+            'load /boot/kernel/femtofs.ko']
 order = ['root', 'data', 'bad-header', 'bad-metadata']
 if mode == 'reverse':
     order.reverse()
@@ -169,6 +170,8 @@ loader_addresses = dict((name, int(address, 16)) for address, name in re.findall
     r'(0x[0-9a-f]+): /boot/(root|data).img \(femtofs_image,', output))
 assert all(int(address, 16) == 0xffffffff80000000 + loader_addresses[label]
            for label, address in preloads.items())
+samples = re.findall(r'femtofs: page data offset (\d+) physical (0x[0-9a-f]+)', output)
+assert samples and int(samples[0][1], 16) == loader_addresses['data'] + int(samples[0][0])
 assert all(address == preloads[label] for label, address in mounted)
 assert 'data' in {label for label, _ in mounted}
 if mode != 'control':

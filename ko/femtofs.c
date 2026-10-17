@@ -251,6 +251,9 @@ static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t
         if (fs->bank->preload) atomic_add_long(&ff_borrowed_faults, 1);
     }
     page = vm_page_getfake(pmap_kextract(address), VM_MEMATTR_DEFAULT);
+    if (!copied && bootverbose && atomic_cmpset_int(&fs->bank->sampled, 0, 1))
+        printf("femtofs: page %s offset %u physical %#jx\n", fs->bank->label,
+            source, (uintmax_t)VM_PAGE_TO_PHYS(page));
     VM_OBJECT_WLOCK(object);
     vm_page_replace(page, object, (*mres)->pindex, *mres);
     *mres = page;

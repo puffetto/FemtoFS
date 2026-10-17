@@ -26,6 +26,7 @@ struct ff_bank {
     struct ff_image image;
     size_t extent;
     int claimed, preload;
+    u_int sampled;
     char label[FF_LABEL_SIZE], source[1024];
 };
 int ff_banks_init(void);

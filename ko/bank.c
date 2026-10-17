@@ -178,6 +178,18 @@ static int bank_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int flags,
     if (stopping) { sx_xunlock(&bank_lock); return ENXIO; }
     active++;
     error = 0;
+    /* kldunload also deletes preload records. Do not wait on the linker while
+     * holding our lock: module uninit acquires it to check active operations. */
+    if (cmd == FF_BANK_DISCARD) {
+        sx_xunlock(&bank_lock);
+        error = linker_kldload_busy(LINKER_UB_UNLOCK | LINKER_UB_PCATCH);
+        sx_xlock(&bank_lock);
+        if (error) {
+            active--;
+            sx_xunlock(&bank_lock);
+            return error;
+        }
+    }
     if (cmd == FF_BANK_LIST) {
         if (r->index && r->generation != generation) error = EAGAIN;
         else {
@@ -220,6 +232,9 @@ static int bank_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int flags,
             sx_xlock(&bank_lock);
         }
     }
+    sx_xunlock(&bank_lock);
+    if (cmd == FF_BANK_DISCARD) linker_kldload_unbusy(0);
+    sx_xlock(&bank_lock);
     active--;
     sx_xunlock(&bank_lock);
     return error;
