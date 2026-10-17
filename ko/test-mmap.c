@@ -38,6 +38,9 @@ int main(int argc, char **argv)
     if (getenv("FEMTOFS_TEST_BARRIER")) {
         char token;
         int barrier = atoi(getenv("FEMTOFS_TEST_BARRIER"));
+        int ready = atoi(getenv("FEMTOFS_TEST_READY"));
+        assert(write(ready, "r", 1) == 1);
+        close(ready);
         assert(read(barrier, &token, 1) == 1);
         close(barrier);
     }

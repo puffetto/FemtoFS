@@ -112,9 +112,18 @@ run('umount', mount)
 run('/mount_femtofs', 'data', mount)
 before = counter('clean_pages')
 reader, writer = os.pipe()
+ready_reader, ready_writer = os.pipe()
 processes = [subprocess.Popen(['/test-mmap', str(mount/'file-4097'), '/tmp/tail', str(mount)],
-    env=dict(os.environ, FEMTOFS_TEST_BARRIER=str(reader)), pass_fds=(reader,)) for _ in range(8)]
+    env=dict(os.environ, FEMTOFS_TEST_BARRIER=str(reader), FEMTOFS_TEST_READY=str(ready_writer)),
+    pass_fds=(reader, ready_writer)) for _ in range(8)]
 os.close(reader)
+os.close(ready_writer)
+ready = b''
+while len(ready) < len(processes):
+    chunk = os.read(ready_reader, len(processes) - len(ready))
+    assert chunk, 'mmap probe exited before reaching the barrier'
+    ready += chunk
+os.close(ready_reader)
 os.write(writer, b'x' * len(processes)); os.close(writer)
 assert all(process.wait() == 0 for process in processes)
 assert counter('clean_pages') == before + 1
