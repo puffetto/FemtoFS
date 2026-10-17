@@ -330,6 +330,7 @@ static int ff_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
     lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
     error = insmntque(vp, mp);
     if (error) { free(vn, M_FEMTOFS); return error; }
+    vn_set_state(vp, VSTATE_CONSTRUCTED);
     error = vfs_hash_insert(vp, ino, flags, curthread, vpp, NULL, NULL);
     if (error || *vpp) return error;
     *vpp = vp;
