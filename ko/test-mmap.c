@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #ifdef __FreeBSD__
 #include <sys/mount.h>
+#include <sys/ptrace.h>
 #endif
 #include <assert.h>
 #include <errno.h>
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 static void bus(int sig) { (void)sig; _exit(0); }
 int main(int argc, char **argv)
@@ -26,7 +28,7 @@ int main(int argc, char **argv)
     size_t length;
     unsigned char *bytes, *p, *shared, *private;
     pid_t child;
-    assert(argc == 4);
+    assert(argc == 4 || (argc == 5 && !strcmp(argv[4], "audit")));
     fd = open(argv[1], O_RDONLY); ef = open(argv[2], O_RDONLY);
     assert(fd >= 0 && ef >= 0 && !fstat(fd, &st) && !fstat(ef, &expected));
     length = ((size_t)st.st_size + page - 1) / page * page;
@@ -47,11 +49,50 @@ int main(int argc, char **argv)
 #ifdef __FreeBSD__
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED));
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
+    if (argc == 5) {
+        struct timespec begin, end;
+        volatile unsigned long sum = 0;
+        assert(length == 4 * 1024 * 1024 && getenv("FEMTOFS_TEST_SUPERPAGE_OFFSET"));
+        for (int advice = 0; advice < 2; advice++) {
+            for (int sample = 0; sample < 7; sample++) {
+                assert(!clock_gettime(CLOCK_MONOTONIC, &begin));
+                for (int iteration = 0; iteration < 32; iteration++) {
+                    p = mmap(NULL, length, PROT_READ, MAP_SHARED | MAP_ALIGNED(21), fd, 0);
+                    assert(p != MAP_FAILED);
+                    if (advice) assert(!madvise(p, length, MADV_WILLNEED));
+                    for (size_t i = 0; i < length; i += page) sum += p[i];
+                    assert(!munmap(p, length));
+                }
+                assert(!clock_gettime(CLOCK_MONOTONIC, &end));
+                printf("mmap benchmark advice=%d sample=%d us_per_4MiB=%.3f\n", advice, sample,
+                    ((end.tv_sec - begin.tv_sec) * 1e6 + (end.tv_nsec - begin.tv_nsec) / 1e3) / 32);
+            }
+        }
+        printf("mmap benchmark checksum=%lu\n", sum);
+        fflush(stdout);
+    }
     if (getenv("FEMTOFS_TEST_SUPERPAGE_OFFSET")) {
         size_t span = 2 * 1024 * 1024;
         off_t off = strtoull(getenv("FEMTOFS_TEST_SUPERPAGE_OFFSET"), NULL, 10);
         unsigned char original;
         assert(off >= 0 && (uint64_t)off + span <= (uint64_t)st.st_size);
+        p = mmap(NULL, span, PROT_READ, MAP_SHARED | MAP_ALIGNED(21), fd, off);
+        assert(p != MAP_FAILED && !madvise(p, span, MADV_WILLNEED));
+        child = fork(); assert(child >= 0);
+        if (!child) {
+            signal(SIGSEGV, bus);
+            /* Prefault in the writing process too: fork may change its PTEs. */
+            assert(!madvise(p, span, MADV_WILLNEED));
+            *(volatile unsigned char *)p ^= 0xff;
+            _exit(1);
+        }
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status));
+        assert(pread(fd, &original, 1, off) == 1);
+        fprintf(stderr, "2 MiB read-only shared write trapped: %s; bank unchanged: %s\n",
+            WEXITSTATUS(status) == 0 ? "yes" : "NO", original == bytes[off] ? "yes" : "NO");
+        assert(WEXITSTATUS(status) == 0 && original == bytes[off]);
+        assert(!munmap(p, span));
+        if (argc == 5) { close(fd); free(bytes); return 0; }
         p = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ALIGNED(21), fd, off);
         assert(p != MAP_FAILED && (uintptr_t)p % span == 0);
         assert(!madvise(p, span, MADV_WILLNEED));
@@ -59,16 +100,6 @@ int main(int argc, char **argv)
         assert(pread(fd, &original, 1, off) == 1);
         fprintf(stderr, "2 MiB private mapping preserves bank: %s\n", original == bytes[off] ? "yes" : "NO");
         assert(original == bytes[off]);
-        assert(!munmap(p, span));
-        p = mmap(NULL, span, PROT_READ, MAP_SHARED | MAP_ALIGNED(21), fd, off);
-        assert(p != MAP_FAILED && !madvise(p, span, MADV_WILLNEED));
-        child = fork(); assert(child >= 0);
-        if (!child) {
-            signal(SIGSEGV, bus);
-            *(volatile unsigned char *)p ^= 0xff;
-            _exit(1);
-        }
-        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
         assert(!munmap(p, span));
         puts("2 MiB aligned mappings and WILLNEED preserve COW/shared protection: passed");
     }
@@ -87,6 +118,10 @@ int main(int argc, char **argv)
         if (!length) continue;
         p = mmap(NULL, length, PROT_READ, flags, fd, 0);
         assert(p != MAP_FAILED && (uintptr_t)p % page == 0);
+        assert(!mlock(p, length));
+        assert(!memcmp(p, bytes, length));
+        assert(!munlock(p, length));
+        assert(!msync(p, length, MS_SYNC | MS_INVALIDATE));
         assert(!memcmp(p, bytes, length));
         if (!kind) assert(mprotect(p, length, PROT_READ | PROT_WRITE) == -1);
         else {
@@ -103,11 +138,42 @@ int main(int argc, char **argv)
             }
             assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
             for (size_t i = 0; i < length; i++) assert(p[i] == (unsigned char)(bytes[i] ^ 0xff));
+            assert(!msync(p, length, MS_SYNC | MS_INVALIDATE));
+            for (size_t i = 0; i < length; i++) assert(p[i] == (unsigned char)(bytes[i] ^ 0xff));
             assert(!memcmp(shared, bytes, length));
             assert(!munmap(shared, length));
         }
         assert(!munmap(p, length));
     }
+#ifdef __FreeBSD__
+    if (length) {
+        /* Debugger writes must COW even when the target mapping is read-only. */
+        unsigned char changed = bytes[0] ^ 0x55, original;
+        struct ptrace_io_desc io;
+        p = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
+        assert(p != MAP_FAILED);
+        child = fork(); assert(child >= 0);
+        if (!child) {
+            assert(!ptrace(PT_TRACE_ME, 0, NULL, 0));
+            raise(SIGSTOP);
+            assert(p[0] == changed && p[length - 1] == (unsigned char)(bytes[length - 1] ^ 0x55));
+            _exit(0);
+        }
+        assert(waitpid(child, &status, 0) == child && WIFSTOPPED(status));
+        for (size_t i = 0; i < 2; i++) {
+            size_t off = i ? length - 1 : 0;
+            changed = bytes[off] ^ 0x55;
+            io = (struct ptrace_io_desc){PIOD_WRITE_D, p + off, &changed, 1};
+            assert(!ptrace(PT_IO, child, (caddr_t)&io, 0) && io.piod_len == 1);
+        }
+        assert(!ptrace(PT_DETACH, child, (caddr_t)1, 0));
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(!memcmp(p, bytes, length));
+        assert(pread(fd, &original, 1, 0) == 1 && original == bytes[0]);
+        assert(!munmap(p, length));
+        puts("cold mlock, msync invalidation and ptrace private COW: passed");
+    }
+#endif
     p = mmap(NULL, length + page, PROT_READ, MAP_SHARED, fd, 0);
     private = mmap(NULL, length + page, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
     assert(p != MAP_FAILED && private != MAP_FAILED);

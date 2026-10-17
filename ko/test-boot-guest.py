@@ -32,6 +32,37 @@ def refuse(*args):
 
 
 assert Path('/identity').read_text() == 'FemtoFS root\n'
+raw = Path('/runtime/boot/data.img').read_bytes()
+u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
+files = {}
+for i in range(u32(56)):
+    bucket = 128 + (u32(52)+i)*16
+    if raw[bucket] not in (1, 4):
+        continue
+    nameoff = u32(bucket+8)
+    name = raw[nameoff:raw.index(b'\0', nameoff)].decode()
+    obj = 128 + u32(bucket+4)*16
+    if raw[obj] == 4:
+        obj = 128 + u32(obj+4)*16
+    files[name] = u32(obj+4), u32(obj+8)
+
+# Select a physically and virtually 2 MiB-aligned window in loader memory.
+metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
+record = metadata.split('value:\t/boot/data.img', 1)[1]
+address = int(re.search(r'MODINFO_ADDR.*?value:\s*(0x[0-9a-f]+)', record, re.S)[1], 16)
+large_offset = (-(address + files['file-4194304'][0])) % (2 * 1024 * 1024)
+
+if Path('/etc/guest-mode').read_text() == 'audit':
+    mount = Path('/tmp/data'); mount.mkdir()
+    run('/mount_femtofs', '-o', 'clean', 'data', mount)
+    off, size = files['file-4194304']
+    Path('/tmp/expected').write_bytes(raw[off:off+size])
+    env = dict(os.environ, FEMTOFS_TEST_SUPERPAGE_OFFSET=str(large_offset))
+    run('/test-mmap', mount/'file-4194304', '/tmp/expected', mount, 'audit', env=env)
+    run('umount', mount)
+    print('FEMTOFS_BOOT ALL TESTS PASSED', flush=True)
+    sys.exit(0)
+
 root_size = len(Path('/runtime/boot/root.img').read_bytes())
 data_size = len(Path('/runtime/boot/data.img').read_bytes())
 loader_total = root_size + data_size
@@ -75,25 +106,6 @@ try:
             run('umount', user_mount)
 finally:
     run('sysctl', 'vfs.usermount='+old_usermount)
-u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
-files = {}
-for i in range(u32(56)):
-    bucket = 128 + (u32(52)+i)*16
-    if raw[bucket] not in (1, 4):
-        continue
-    nameoff = u32(bucket+8)
-    name = raw[nameoff:raw.index(b'\0', nameoff)].decode()
-    obj = 128 + u32(bucket+4)*16
-    if raw[obj] == 4:
-        obj = 128 + u32(obj+4)*16
-    files[name] = u32(obj+4), u32(obj+8)
-
-# Select a physically and virtually 2 MiB-aligned window in loader memory.
-metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
-record = metadata.split('value:\t/boot/data.img', 1)[1]
-address = int(re.search(r'MODINFO_ADDR.*?value:\s*(0x[0-9a-f]+)', record, re.S)[1], 16)
-large_offset = (-(address + files['file-4194304'][0])) % (2 * 1024 * 1024)
-
 for mode in ('clean', 'leaking'):
     clean_before = counter('clean_bytes')
     faults_before = counter('loader_faults')

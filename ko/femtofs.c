@@ -296,7 +296,9 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     obj = vm_object_allocate(OBJT_SWAP, OFF_TO_IDX(size));
     VM_OBJECT_WLOCK(obj);
     obj->backing_object_offset = off;
-    /* Transfer the device reference; non-anonymous backings have no shadow list. */
+    /* Mirror vm_object_backing_insert() in FreeBSD 15.1 vm_object.c (static):
+     * transfer the device reference; non-anonymous backings have no shadow list.
+     * Recheck this invariant when updating the supported kernel. */
     obj->backing_object = backing;
     atomic_add_int((volatile u_int *)&backing->shadow_count, 1);
     VM_OBJECT_WUNLOCK(obj);

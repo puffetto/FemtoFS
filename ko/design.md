@@ -43,7 +43,6 @@ to anonymous shadow pages, preserving the bank and shared clean-tail cache.
 Shared mappings remain read-only. Stock init must boot a normal dynamic shell
 with its runtime linker and shared libraries in the bank in acceptance tests.
 
-
 Each user mapping has an immutable, non-anonymous OBJT_SWAP view backed by the
 bank pager. The view holds no copied file pages; reads fault through to the
 original physical pages. It keeps OBJT_DEVICE out of the user map, avoiding

@@ -18,10 +18,10 @@ def run(*args, **kw):
 
 
 if platform.system() != 'FreeBSD' or len(sys.argv) not in (5, 6):
-    sys.exit('usage on FreeBSD: test-boot.py stock-boot-directory builder stock-src new-work-directory [control|reverse]')
+    sys.exit('usage on FreeBSD: test-boot.py stock-boot-directory builder stock-src new-work-directory [control|reverse|audit]')
 base, builder, src, work = [Path(p).resolve() for p in sys.argv[1:5]]
 mode = sys.argv[5] if len(sys.argv) == 6 else "root"
-assert mode in ("root", "reverse", "control")
+assert mode in ("root", "reverse", "control", "audit")
 repo = Path(__file__).resolve().parent.parent
 work.mkdir()
 build, root, stage, data = (work / n for n in ('module', 'root', 'stage', 'data'))
@@ -38,7 +38,9 @@ for name in ('loader', 'loader_lua', 'lua', 'defaults'):
 for name in ('kernel', 'nullfs.ko'):
     shutil.copy(base/'kernel'/name, stage/'boot/kernel'/name)
 env = dict(os.environ, MAKEOBJDIR=str(build))
-run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', env=env)
+# A debug guest must compile the module against that kernel's option headers.
+kernel_options = [f'KERNBUILDDIR={os.environ["FEMTOFS_TEST_KERNBUILDDIR"]}'] if 'FEMTOFS_TEST_KERNBUILDDIR' in os.environ else []
+run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', *kernel_options, env=env)
 for name in ('mount_femtofs', 'femtoctl', 'test-bank', 'test-mmap', 'test-directory'):
     run('cc', '-static', '-Wall', '-Wextra', '-Werror', '-g', repo/f'ko/{name}.c', '-o', root/name)
 shutil.copy(build/'femtofs.ko', stage/'boot/kernel/femtofs.ko')
@@ -192,5 +194,5 @@ assert all(address == preloads[label] for label, address in mounted)
 assert 'data' in {label for label, _ in mounted}
 if mode != 'control':
     assert 'root' in {label for label, _ in mounted}
-print(f'PASS: stock FemtoFS {mode} boot, bank lifecycle/import regressions; {work}/console.log')
+print(f'PASS: FemtoFS {mode} boot, bank lifecycle/import regressions; {work}/console.log')
 # END File: ko/test-boot.py
