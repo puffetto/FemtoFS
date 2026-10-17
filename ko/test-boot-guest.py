@@ -111,12 +111,21 @@ assert counter('clean_pages') == before + 1
 run('umount', mount)
 run('/mount_femtofs', 'data', mount)
 before = counter('clean_pages')
-with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-    list(pool.map(lambda _: run('/test-mmap', mount/'file-4097', '/tmp/tail', mount), range(8)))
+reader, writer = os.pipe()
+processes = [subprocess.Popen(['/test-mmap', str(mount/'file-4097'), '/tmp/tail', str(mount)],
+    env=dict(os.environ, FEMTOFS_TEST_BARRIER=str(reader)), pass_fds=(reader,)) for _ in range(8)]
+os.close(reader)
+os.write(writer, b'x' * len(processes)); os.close(writer)
+assert all(process.wait() == 0 for process in processes)
 assert counter('clean_pages') == before + 1
 run('umount', mount)
 
 # File import disconnects from the source; remount retains the owned allocation.
+for content in (b'', raw[:64], raw[:-4096]):
+    Path('/tmp/short.img').write_bytes(content)
+    refuse(ctl, 'add', 'short', '/tmp/short.img')
+    assert counter('snapshot_bytes') == 0
+Path('/tmp/short.img').unlink()
 Path('/tmp/backing.img').write_bytes(raw)
 run(ctl, 'add', 'copy', '/tmp/backing.img')
 Path('/tmp/backing.img').unlink()
@@ -152,6 +161,21 @@ for _ in range(10):
         run(ctl, 'discard', 'race')
 assert counter('snapshot_bytes') == 0
 run('/test-bank', '/runtime/boot/data.img')
+# Listing during mutation must return a coherent snapshot or an explicit retry error.
+def mutate():
+    for _ in range(20):
+        run(ctl, 'add', 'listing', '/runtime/boot/data.img')
+        run(ctl, 'discard', 'listing')
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    mutation = pool.submit(mutate)
+    for _ in range(20):
+        result = subprocess.run([ctl, 'list'], capture_output=True, text=True)
+        if result.returncode:
+            assert 'temporarily unavailable' in result.stderr.lower()
+        else:
+            rows = [line.split('\t')[0] for line in result.stdout.splitlines()[1:]]
+            assert len(rows) == len(set(rows)) and {'root', 'data'} <= set(rows)
+    mutation.result()
 run(sys.executable, '/test-mount.py', '/makefemtofs', '/mount_femtofs', '/test-mmap', '/tmp')
 assert counter('snapshot_bytes') == 0 and counter('borrowed_bytes') == loader_total
 pages = counter('released_pages')

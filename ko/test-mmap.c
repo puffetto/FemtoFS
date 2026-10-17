@@ -34,6 +34,13 @@ int main(int argc, char **argv)
     assert(expected.st_size == (off_t)length);
     assert(read(ef, bytes, length) == (ssize_t)length);
     close(ef);
+    /* Optional pipe barrier lets independent processes fault a fresh cache together. */
+    if (getenv("FEMTOFS_TEST_BARRIER")) {
+        char token;
+        int barrier = atoi(getenv("FEMTOFS_TEST_BARRIER"));
+        assert(read(barrier, &token, 1) == 1);
+        close(barrier);
+    }
 #ifdef __FreeBSD__
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED));
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
