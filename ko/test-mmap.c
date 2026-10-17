@@ -150,28 +150,32 @@ int main(int argc, char **argv)
         /* Debugger writes must COW even when the target mapping is read-only. */
         unsigned char changed = bytes[0] ^ 0x55, original;
         struct ptrace_io_desc io;
-        p = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
-        assert(p != MAP_FAILED);
-        child = fork(); assert(child >= 0);
-        if (!child) {
-            assert(!ptrace(PT_TRACE_ME, 0, NULL, 0));
-            raise(SIGSTOP);
-            assert(p[0] == changed && p[length - 1] == (unsigned char)(bytes[length - 1] ^ 0x55));
-            _exit(0);
+        for (kind = 0; kind < 2; kind++) {
+            p = mmap(NULL, length, PROT_READ, kind ? MAP_PRIVATE : MAP_SHARED, fd, 0);
+            assert(p != MAP_FAILED);
+            child = fork(); assert(child >= 0);
+            if (!child) {
+                assert(!ptrace(PT_TRACE_ME, 0, NULL, 0));
+                raise(SIGSTOP);
+                assert(p[0] == changed &&
+                    p[length - 1] == (unsigned char)(bytes[length - 1] ^ 0x55));
+                _exit(0);
+            }
+            assert(waitpid(child, &status, 0) == child && WIFSTOPPED(status));
+            for (size_t i = 0; i < 2; i++) {
+                size_t off = i ? length - 1 : 0;
+                changed = bytes[off] ^ 0x55;
+                io = (struct ptrace_io_desc){PIOD_WRITE_D, p + off, &changed, 1};
+                assert(!ptrace(PT_IO, child, (caddr_t)&io, 0) && io.piod_len == 1);
+            }
+            assert(!ptrace(PT_DETACH, child, (caddr_t)1, 0));
+            assert(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                WEXITSTATUS(status) == 0);
+            assert(!memcmp(p, bytes, length));
+            assert(pread(fd, &original, 1, 0) == 1 && original == bytes[0]);
+            assert(!munmap(p, length));
         }
-        assert(waitpid(child, &status, 0) == child && WIFSTOPPED(status));
-        for (size_t i = 0; i < 2; i++) {
-            size_t off = i ? length - 1 : 0;
-            changed = bytes[off] ^ 0x55;
-            io = (struct ptrace_io_desc){PIOD_WRITE_D, p + off, &changed, 1};
-            assert(!ptrace(PT_IO, child, (caddr_t)&io, 0) && io.piod_len == 1);
-        }
-        assert(!ptrace(PT_DETACH, child, (caddr_t)1, 0));
-        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
-        assert(!memcmp(p, bytes, length));
-        assert(pread(fd, &original, 1, 0) == 1 && original == bytes[0]);
-        assert(!munmap(p, length));
-        puts("cold mlock, msync invalidation and ptrace private COW: passed");
+        puts("cold mlock, msync invalidation and ptrace shared/private COW: passed");
     }
 #endif
     p = mmap(NULL, length + page, PROT_READ, MAP_SHARED, fd, 0);
