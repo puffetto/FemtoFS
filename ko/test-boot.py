@@ -28,8 +28,12 @@ build, root, stage, data = (work / n for n in ('module', 'root', 'stage', 'data'
 build.mkdir(); root.mkdir(); data.mkdir()
 # Stock kernel and loader, with only the guest's required modules.
 stage.mkdir()
-shutil.copytree(base, stage/'boot', copy_function=shutil.copy,
-                ignore=shutil.ignore_patterns('kernel', 'kernel.old', 'modules', 'firmware', 'efi'))
+(stage/'boot').mkdir()
+for name in ('loader', 'loader_lua', 'lua', 'defaults'):
+    if (base/name).is_dir():
+        shutil.copytree(base/name, stage/'boot'/name, copy_function=shutil.copy)
+    else:
+        shutil.copy(base/name, stage/'boot'/name)
 (stage/'boot/kernel').mkdir()
 for name in ('kernel', 'tmpfs.ko', 'nullfs.ko'):
     shutil.copy(base/'kernel'/name, stage/'boot/kernel'/name)
