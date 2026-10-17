@@ -107,9 +107,13 @@ dumpdev="NO"
 An accompanying root entry is `root / femtofs ro,clean 0 0`; do not also put
 `/var` and `/tmp` in `fstab` when rc creates them through `varmfs` and `tmpmfs`.
 Host identity and SSH host keys must be provisioned deliberately; keys which
-identify the appliance cannot be generated afresh on a read-only `/etc`. Stock
-multi-user rc boot with this complete profile remains a beta acceptance test
-rather than a verified configuration.
+identify the appliance cannot be generated afresh on a read-only `/etc`. Bake
+matching `/etc/hostid` and `/etc/machine-id`; `hostid_save` then finds the
+current values and does not rewrite them. Bake every enabled
+`/etc/ssh/ssh_host_*_key`, or disable the missing key algorithms, so the sshd
+pre-start hook does not invoke `ssh-keygen`. Stock multi-user rc boot with this
+complete profile remains a beta acceptance test rather than a verified
+configuration.
 
 If bank registration or root validation fails, the kernel logs the reason and
 mountroot eventually enters its console prompt. Set `vfs.mountroot.timeout` to
@@ -168,9 +172,13 @@ all consumers zero-copy. Clean/leaking tail rules apply to private mappings too.
 Validation includes structural checks, metadata and whole-image hashes,
 terminators, overlaps, visibility and reachability. The FNV hashes detect
 accidental corruption; they do not authenticate an image. Global canonical-byte
-checks remain omitted. Unknown compatible metadata extensions are ignored.
-Original unaligned mmap offsets are normalized by FreeBSD before filesystem entry;
-rejection of the original offset remains an unresolved contract limitation.
+checks remain omitted. Whole-image FNV is a serial pass over the complete image
+at bank adoption and adds measurable boot time: a review measurement on a warm
+200 MB host image increased validation from 0.05 s to 0.41–0.43 s. Appliance
+CPUs and cold media can take longer. Unknown compatible metadata extensions are
+ignored. Original unaligned mmap offsets are normalized by FreeBSD before
+filesystem entry; rejection of the original offset remains an unresolved
+contract limitation.
 
 ## Disposable verification
 

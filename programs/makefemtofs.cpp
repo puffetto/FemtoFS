@@ -784,11 +784,13 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
 
     InputTree tree;
     struct archive_entry* entry = nullptr;
+    bool sawEntry = false;
     for (;;) {
         const int status = archive_read_next_header(input.get(), &entry);
         if (status == ARCHIVE_EOF)
             break;
         checkArchiveStatus(input.get(), status, "reading archive header");
+        sawEntry = true;
         if ((archive_format(input.get()) & ARCHIVE_FORMAT_BASE_MASK) ==
             ARCHIVE_FORMAT_MTREE) {
             throw Error("mtree/METALOG input is unsupported; convert it with "
@@ -820,6 +822,8 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
         }
         tree.nodes.push_back(std::move(node));
     }
+    if (!sawEntry)
+        throw Error("input archive contains no entries");
     checkArchiveStatus(input.get(), archive_read_close(input.get()),
                        "closing input archive");
     return tree;

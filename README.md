@@ -241,6 +241,9 @@ higher priority than build speed.
 The input archive or directory tree must remain unchanged for the entire image
 construction. `makefemtofs` detects some concurrent changes and fails when it
 does, but it does not provide snapshot semantics or complete TOCTOU protection.
+It rejects archives containing no entries. Archive readers can accept a stream
+truncated cleanly between entries, so callers must verify an archive checksum or
+signature before building when completeness or authenticity matters.
 
 Build with CMake:
 

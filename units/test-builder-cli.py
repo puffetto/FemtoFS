@@ -352,6 +352,14 @@ class BuilderCLI(unittest.TestCase):
         output = self.build(source, error='mtree/METALOG input is unsupported')
         self.assertFalse(output.exists())
 
+    def test_empty_archives_are_rejected(self):
+        sources = [self.root / 'zero-byte.tar', self.archive([])]
+        sources[0].write_bytes(b'')
+        for source in sources:
+            with self.subTest(source=source.name):
+                output = self.build(source, error='input archive contains no entries')
+                self.assertFalse(output.exists())
+
     def test_empty_hardlink_group(self):
         source = self.archive([('a', 'link', 'b'), ('b', 'link', 'a')])
         self.image(self.build(source))
