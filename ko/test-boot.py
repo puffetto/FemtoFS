@@ -215,5 +215,6 @@ if mode != 'root-smoke':
     assert 'data' in {label for label, _ in mounted}
 if mode not in ('control', 'audit'):
     assert 'root' in {label for label, _ in mounted}
-print(f'PASS: FemtoFS {mode} boot, bank lifecycle/import regressions; {work}/console.log')
+coverage = 'root mount/dynamic shell/shutdown' if mode == 'root-smoke' else 'bank lifecycle/import regressions'
+print(f'PASS: FemtoFS {mode} boot, {coverage}; {work}/console.log')
 # END File: ko/test-boot.py
