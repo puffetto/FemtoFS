@@ -126,6 +126,11 @@ try:
             run(helper, '-o', mode, label, mountpoint)
             mounted = True
             run('mount', '-u', '-o', 'ro', mountpoint)
+            bad = subprocess.run(['mount', '-u', '-o', 'ro,unknown-option', mountpoint], capture_output=True)
+            assert bad.returncode != 0, 'mount update accepted an unknown option'
+            other_mode = 'leaking' if mode == 'clean' else 'clean'
+            bad = subprocess.run(['mount', '-u', '-o', f'ro,{other_mode}', mountpoint], capture_output=True)
+            assert bad.returncode != 0, 'mount update accepted a policy change'
             bad = subprocess.run(['mount', '-u', '-o', 'rw', mountpoint], capture_output=True)
             assert bad.returncode != 0, 'read-only filesystem accepted a writable update'
             run(probe.with_name('test-directory'), mountpoint)

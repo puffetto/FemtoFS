@@ -73,6 +73,10 @@ set vfs.root.mountfrom.options="ro,clean,bank=root"
 boot
 ```
 
+Stock rc defaults `root_rw_mount` to `YES` and aborts startup when its
+`mount -uw /` fails. A FemtoFS root must set `root_rw_mount="NO"` in
+`/etc/rc.conf`.
+
 The environment maps labels to exact loader-recorded names, consumed on module
 initialization. Names must be unique across preload types and allocations cannot
 be registered under multiple labels. Extents must be VM-page aligned at both ends
@@ -133,6 +137,10 @@ python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-root
 python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-control control
 python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-reverse reverse
 python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-audit audit
+env FEMTOFS_TEST_KERNBUILDDIR=/usr/obj/usr/src/amd64.amd64/sys/FEMTOFS_DEBUG \
+    python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-debug-control control
+env FEMTOFS_TEST_KERNBUILDDIR=/usr/obj/usr/src/amd64.amd64/sys/FEMTOFS_DEBUG \
+    python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-debug-root-smoke root-smoke
 ```
 
 The harness builds module/static tools, boots QEMU without networking, and keeps
@@ -148,8 +156,7 @@ used with a historical module that cannot host the current dynamic userspace.
 Private `fsck/` tests are not used.
 
 Native arm64/alternate VM pages, active MAC policy execution, NFS export and forced
-unmount remain outside current native acceptance. Source/build checks alone do
-not establish runtime behavior; consult the execution log for actual results.
+unmount remain outside current native acceptance.
 
 Generic FreeBSD mount(8) sends the label in `from` directly; the module accepts
 that form without a `bank` option. The helper and root boot use empty `from` plus
@@ -157,13 +164,13 @@ that form without a `bank` option. The helper and root boot use empty `from` plu
 
 ## Verification recorded 17 October 2026
 
-Production commit `bba303c`, exercised by the tests through `14c183e`, passes
-local FreeBSD-target compilation with `-Werror`, 13 portable decoder tests,
-native builds and stock-kernel QEMU root, UFS-control and reversed-loader runs.
+The current implementation passes local FreeBSD-target compilation with
+`-Werror`, 13 portable decoder tests, native builds and stock-kernel QEMU root,
+UFS-control and reversed-loader runs.
 The root run passes 80 mmap probes, including private writes, write upgrades,
 fork isolation, descriptor lifetime and EOF; two additional aligned 2 MiB tests
 cover private COW and shared protection, including MADV_WILLNEED. It also passes
-all four 316-object clean/leaking and 512/4096-sector matrix combinations,
+all four 387-object clean/leaking and 512/4096-sector matrix combinations,
 10 malformed imports, tail reuse, nullfs, import/discard races and control checks.
 Source devices are detached before mounting imported banks.
 
@@ -198,8 +205,12 @@ failure or Python traceback appears in these passing runs.
 
 An INVARIANTS/WITNESS control guest initially found a missing
 `VSTATE_CONSTRUCTED` transition when publishing a new vnode. `bba303c` adds that
-transition; the same debug-kernel suite then passes without a vnode assertion,
-kernel panic or WITNESS diagnostic.
+transition. A later debug control run covers the complete lifecycle/import and
+filesystem-operation suite with shared vnode locks and no vnode assertion,
+kernel panic or WITNESS diagnostic. A separate debug `root-smoke` run covers
+mountroot, a dynamic shell and its libraries from FemtoFS, and shutdown without
+auxiliary mount crossings. Read-only mount updates, rejected writable and policy
+changing updates, `statfs` and `pathconf` are part of the native matrix.
 
 Not covered: allocator exhaustion, device read-error injection, malformed loader
 address records, unload during a deliberately stalled import, active MAC policy

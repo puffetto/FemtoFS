@@ -400,11 +400,6 @@ static int ff_mount(struct mount *mp)
         vfs_mount_error(mp, "administrator privilege required");
         return error;
     }
-    if (mp->mnt_flag & MNT_UPDATE) {
-        if (vfs_flagopt(mp->mnt_optnew, "ro", NULL, 0)) return 0;
-        vfs_mount_error(mp, "FemtoFS cannot become writable");
-        return EROFS;
-    }
     if (vfs_filteropt(mp->mnt_optnew, opts)) {
         vfs_mount_error(mp, "unsupported mount option");
         return EINVAL;
@@ -413,6 +408,11 @@ static int ff_mount(struct mount *mp)
         vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) {
         vfs_mount_error(mp, "clean and leaking are mutually exclusive");
         return EINVAL;
+    }
+    if (mp->mnt_flag & MNT_UPDATE) {
+        if (vfs_flagopt(mp->mnt_optnew, "ro", NULL, 0)) return 0;
+        vfs_mount_error(mp, "FemtoFS cannot become writable");
+        return EROFS;
     }
     from = vfs_getopts(mp->mnt_optnew, "from", &error);
     if (error) { vfs_mount_error(mp, "missing mount source"); return error; }
