@@ -226,8 +226,10 @@ mappings. The resident-bank implementation replaces the historical md hooks:
 bootloader images are adopted without copying; `femtoctl add` copies files or
 devices into named RAM banks. Mount by label, unmount to retain, and explicitly
 discard unused banks. No md/GEOM/kernel patches or direct device mounts are part
-of this design. Asynchronous imports remain deferred. Stock FreeBSD 15.1 root/control guest verification passes; commands and remaining
-coverage gaps are recorded in `tmp/NODEV-execution.md`.
+of this design. Mounting banks requires root. Private writable mappings use COW;
+shared mappings remain read-only. Stock FreeBSD 15.1 dynamic-shell root and
+UFS-control verification passes; commands and coverage limits are described in
+the [module documentation](ko/README.md). Asynchronous imports remain deferred.
 
 Image construction is offline work. Its efficiency matters, but deterministic
 output, safe publication, mounted lookup performance, and final image size have

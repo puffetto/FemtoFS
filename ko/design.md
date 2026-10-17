@@ -43,6 +43,15 @@ to anonymous shadow pages, preserving the bank and shared clean-tail cache.
 Shared mappings remain read-only. Stock init must boot a normal dynamic shell
 with its runtime linker and shared libraries in the bank in acceptance tests.
 
+
+Each user mapping has an immutable, non-anonymous OBJT_SWAP view backed by the
+bank pager. The view holds no copied file pages; reads fault through to the
+original physical pages. It keeps OBJT_DEVICE out of the user map, avoiding
+amd64's device-superpage prefault path, which can install writable entries
+without applying read-only/COW protection. Private writes get a separate anonymous
+shadow with normal VM reservation/accounting. Acceptance includes physically and
+virtually aligned 2 MiB private/shared mappings and MADV_WILLNEED.
+
 Counters distinguish loader/imported logical image bytes from retained allocation
 bytes. Loader fault/release counters name their origin explicitly; clean-page
 and decoded-metadata accounting remain separate from image storage and VM COW.
@@ -53,8 +62,8 @@ Do not replace the host kernel. Acceptance includes root boot, file/device
 imports, retained remount, failure/race cleanup and measured preload reclamation.
 The detailed checklist is `tmp/NODEV-plan.md`. Private `fsck/` code is not accessed.
 
-Dirty mode, forced unmount,
-NFS export, FreeBSD 14.x and alternate native architectures remain outside scope.
+Dirty mode, forced unmount, NFS export, FreeBSD 14.x and alternate native
+architectures remain outside scope.
 Exec/sendfile can still use the ordinary vnode cache; direct mmap page reuse does
 not imply all file consumers avoid copies.
 
@@ -252,14 +261,3 @@ native verification. This design does not silently resolve those separate items.
 Generic FreeBSD mount(8) sends the label in `from` directly; the module accepts
 that form without a `bank` option. The helper and root boot use empty `from` plus
 `bank=LABEL`. Conflicting selectors and device paths are rejected.
-
-
-Review follow-up mapping safeguard: user mappings must not directly expose the
-OBJT_DEVICE bank pager. FreeBSD amd64's device superpage prefault path can install
-writable mappings without applying the entry's read-only/COW protection; a real
-2 MiB-aligned private mapping reproduced a bank write. Use an immutable,
-non-anonymous OBJT_SWAP view with the bank pager as its backing object. It holds
-no copied file pages; reads fault through to the bank. Private writes receive a
-separate VM-managed anonymous COW shadow with normal reservation/accounting.
-This also keeps shared read-only mappings out of the device prefault path.
-Test aligned private/shared mappings and MADV_WILLNEED explicitly.

@@ -107,7 +107,9 @@ and ordinary vnode-cache pages are separate from these module allocation counter
 
 Private writable mappings and later private write upgrades use FreeBSD VM COW:
 reads retain eligible direct bank pages, writes populate anonymous process-private
-pages. They cannot alter the bank, the shared clean cache or another process's
+pages. An immutable VM view separates user mappings from the device pager to
+avoid amd64's writable device-superpage prefault optimization. The view contains
+no copied file pages. They cannot alter the bank, the shared clean cache or another process's
 mapping. Shared writable mmap and shared write upgrades remain rejected. Pager
 vnode references keep mounts/banks alive after fd close. Busy/forced unmounts are
 refused. Exec/sendfile can use the ordinary vnode cache; direct mmap does not make
@@ -148,27 +150,35 @@ that form without a `bank` option. The helper and root boot use empty `from` plu
 
 ## Verification recorded 17 October 2026
 
-Production changes through `36ce8c0` pass local FreeBSD-target compilation and
-13 portable decoder tests, native builds and stock-kernel QEMU root/control boots.
-Each boot passes 78 mmap probes, four 316-object mode/sector matrix combinations,
-10 malformed imports, tail reuse, nullfs, label mounting, import/discard races and
-passed-descriptor privilege checks. Source devices are detached before mounting
-the imported banks. Reversed loader order passes with the same bank identities.
+Production commit `c1d971c` passes local FreeBSD-target compilation with `-Werror`,
+13 portable decoder tests, native builds and stock-kernel QEMU root, UFS-control
+and reversed-loader runs.
+The root run passes 80 mmap probes, including private writes, write upgrades,
+fork isolation, descriptor lifetime and EOF; two additional aligned 2 MiB tests
+cover private COW and shared protection, including MADV_WILLNEED. It also passes
+all four 316-object clean/leaking and 512/4096-sector matrix combinations,
+10 malformed imports, tail reuse, nullfs, import/discard races and control checks.
+Source devices are detached before mounting imported banks.
 
-The sampled data mmap page matches the loader's physical address plus its image
-offset. Discarding the 61,440-byte preload increases VM-managed pages by exactly
-15 and removes its metadata record. The control guest discards all banks,
-unloads/reloads the module and confirms discarded banks stay absent.
+The normal dynamic shell, echo, cat, runtime linker and base libraries run from
+FemtoFS before the auxiliary runtime is mounted. Both unprivileged bank-mount
+forms return EPERM with vfs.usermount=1; root can subsequently mount the same bank.
+Private writes preserve read() contents and do not bypass noexec.
 
-These tests do not inject allocator exhaustion, device read errors, malformed
-loader address records, or unload while an import is deliberately stalled.
-The resident cleanup and locking paths for those cases have source review, not
-runtime coverage. Other architectures and asynchronous imports remain outside this delivery. Root shutdown logs the existing unsupported
-forced-unmount error 45 before syncing and powering off; fixture/CTF diagnostics
-are retained in logs rather than presented as a warning-free run.
+The sampled data page matches the loader's physical address plus its image offset.
+The data fixture contains 4,259,840 logical bytes in a 4,268,032-byte preload:
+discard increases VM-managed pages by exactly 1,042 and removes its metadata.
+Counters distinguish the 8,192 bytes of retained padding; imports retain only
+logical image bytes on the tested 4 KiB VM-page target.
 
-The CLAUDEREVIEW2 follow-up adds private-write, mprotect, fork/independent-map
-isolation, private EOF/lifetime and root-only mount probes. A padded loader image
-checks that logical and allocation counters differ and that discard releases the
-whole extent. These checks require a new native run; the earlier results above
-predate this follow-up.
+All three configurations pass the same 80 mmap and two aligned-page probes.
+The control guest additionally discards the root bank (13,492 pages), unloads and
+reloads the module, and verifies discarded banks stay absent. No panic, assertion
+failure or Python traceback appears in these passing runs.
+
+Not covered: INVARIANTS/WITNESS kernels, allocator exhaustion, device read-error
+injection, malformed loader address records, unload during a deliberately stalled
+import, active MAC policy execution, other architectures/VM page sizes or other
+FreeBSD releases. Asynchronous imports and dirty mode remain deferred. Root
+shutdown still reports unsupported forced unmount (45), then syncs and powers
+off. Expected fixture/CTF diagnostics remain in the logs.
