@@ -347,9 +347,9 @@ static int ff_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
     *vn = (struct ff_vnode){vp, fs, id}; vp->v_data = vn;
     vp->v_type = IFTOVT(fs->bank->image.nodes[id].mode);
     if (vp->v_type == VFIFO) vp->v_op = &ff_fifoops;
-    else VN_LOCK_ASHARE(vp);
     if (ino == 1) vp->v_vflag |= VV_ROOT;
     lockmgr(vp->v_vnlock, LK_EXCLUSIVE, NULL);
+    if (vp->v_type != VFIFO) VN_LOCK_ASHARE(vp);
     error = insmntque(vp, mp);
     if (error) { free(vn, M_FEMTOFS); return error; }
     vn_set_state(vp, VSTATE_CONSTRUCTED);
