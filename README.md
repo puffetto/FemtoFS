@@ -222,13 +222,12 @@ output checks, boundary cases, and deterministic publication/device-commit
 fault injection, and passes on macOS and FreeBSD 15.1, including ASan/UBSan runs.
 
 The [kernel module](ko/README.md) targets FreeBSD 15.1 with `clean` and `leaking`
-modes; 14.x compatibility and `dirty` mode are deferred. Native tests cover
-provider I/O, mounted metadata and permissions, name lookup, FIFOs, and mmap
-contents, protection and page sharing. With the patched md interface, preloaded
-images retain their original backing; unsupported providers automatically use an
-image-sized wired snapshot only when the hook returns `EOPNOTSUPP`. FreeBSD's normalization of original mmap offsets remains a
-documented contract limitation. See the module documentation and
-[coverage matrix](tmp/REVIEW-coverage.md) for commands and remaining gaps.
+mappings. The resident-bank implementation replaces the historical md hooks:
+bootloader images are adopted without copying; `femtoctl add` copies files or
+devices into named RAM banks. Mount by label, unmount to retain, and explicitly
+discard unused banks. No md/GEOM/kernel patches or direct device mounts are part
+of this design. Asynchronous imports remain deferred. Implementation and stock
+kernel verification are in progress in `tmp/NODEV-execution.md`.
 
 Image construction is offline work. Its efficiency matters, but deterministic
 output, safe publication, mounted lookup performance, and final image size have

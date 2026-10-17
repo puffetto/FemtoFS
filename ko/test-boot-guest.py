@@ -2,6 +2,7 @@
 # File: ko/test-boot-guest.py
 # Created by Andrea "Nemesi" Cocito on 16/10/2026
 # Runs only inside the disposable FemtoFS root-boot guest.
+import concurrent.futures
 import os
 from pathlib import Path
 import socket
@@ -24,11 +25,24 @@ def refuse(*args):
 
 
 assert Path('/identity').read_text() == 'FemtoFS root\n'
-with open('/dev/md0', 'rb') as f:
-    root_size = struct.unpack_from('<I', f.read(128), 32)[0]
-assert counter('borrowed_bytes') == root_size and counter('snapshot_bytes') == 0
-print(f'FEMTOFS_BOOT root borrowed={root_size} snapshot=0', flush=True)
+root_size = len(Path('/runtime/boot/root.img').read_bytes())
+data_size = len(Path('/runtime/boot/data.img').read_bytes())
+loader_total = root_size + data_size
+assert counter('borrowed_bytes') == loader_total and counter('snapshot_bytes') == 0
+print(f'FEMTOFS_BOOT banks loader={loader_total} owned=0', flush=True)
+assert not subprocess.check_output(['mdconfig', '-l']).strip()
 mount = Path('/tmp/data'); mount.mkdir()
+ctl = '/femtoctl'
+run(ctl, 'list')
+refuse('kldunload', 'femtofs')
+refuse('/mount_femtofs', '/dev/md0', mount)
+refuse('/mount_femtofs', 'missing', mount)
+refuse(ctl, 'add', 'async', 'future', '/runtime/boot/data.img')
+refuse(ctl, 'add', 'data', '/runtime/boot/data.img')
+for name in ('bad-header', 'bad-metadata'):
+    refuse('/mount_femtofs', name, mount)
+    refuse(ctl, 'add', 'invalid', '/runtime/boot/'+name+'.img')
+assert counter('borrowed_bytes') == loader_total and counter('snapshot_bytes') == 0
 raw = Path('/runtime/boot/data.img').read_bytes()
 u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
 files = {}
@@ -43,24 +57,11 @@ for i in range(u32(56)):
         obj = 128 + u32(obj+4)*16
     files[name] = u32(obj+4), u32(obj+8)
 
-# A supported but busy preload must fail, never create a snapshot.
-writer = os.open('/dev/md1', os.O_RDWR)
-try:
-    refuse('/mount_femtofs', '/dev/md1', mount)
-finally:
-    os.close(writer)
-assert counter('borrowed_bytes') == root_size and counter('snapshot_bytes') == 0
-# Header/metadata rejection must release the borrowed hold and accounting.
-for unit in (2, 3):
-    refuse('/mount_femtofs', f'/dev/md{unit}', mount)
-    assert counter('borrowed_bytes') == root_size and counter('snapshot_bytes') == 0
-    run('mdconfig', '-d', '-o', 'force', '-u', unit)
-
 for mode in ('clean', 'leaking'):
     clean_before = counter('clean_bytes')
     faults_before = counter('borrowed_faults')
-    run('/mount_femtofs', '-o', mode, '/dev/md1', mount)
-    assert counter('borrowed_bytes') == root_size + len(raw)
+    run('/mount_femtofs', '-o', mode, 'data', mount)
+    assert counter('borrowed_bytes') == loader_total
     assert counter('snapshot_bytes') == 0
     assert (mount/'identity').read_text() == 'FemtoFS data\n'
     run('/test-directory', mount)
@@ -69,7 +70,13 @@ for mode in ('clean', 'leaking'):
     fd = os.open(mount/'fifo', os.O_RDWR | os.O_NONBLOCK)
     assert os.write(fd, b'fifo') == 4 and os.read(fd, 4) == b'fifo'
     os.close(fd)
-    refuse('mdconfig', '-d', '-o', 'force', '-u', 1)
+    refuse(ctl, 'discard', 'data')
+    alias = Path('/tmp/alias'); alias.mkdir(exist_ok=True)
+    refuse('/mount_femtofs', 'data', alias)
+    run('mount', '-t', 'nullfs', mount, alias)
+    assert (alias/'identity').read_bytes() == (mount/'identity').read_bytes()
+    refuse('umount', mount)
+    run('umount', alias)
     for name, (off, size) in files.items():
         assert (mount/name).read_bytes() == raw[off:off+size]
         rounded = (size+4095)//4096*4096
@@ -87,25 +94,90 @@ for mode in ('clean', 'leaking'):
     assert counter('borrowed_faults') > faults_before
     assert counter('snapshot_bytes') == 0
     run('umount', mount)
-    assert counter('borrowed_bytes') == root_size
+    assert counter('borrowed_bytes') == loader_total
     assert counter('clean_bytes') == clean_before
     print(f'FEMTOFS_BOOT {mode}: original backing, mmap, lifetime, sendfile, cleanup passed', flush=True)
 
-# A file-backed md retains the old snapshot behavior, including existing writers.
+# A fresh clean mount: the tail cache outlives process A and is reused by B.
+run('mount', mount)  # fstab -> standard mount helper dispatch
+before = counter('clean_pages')
+off, size = files['file-4097']
+assert size == 4097 and off % 4096 == 0
+Path('/tmp/tail').write_bytes(raw[off:off+size] + bytes(4095))
+run('/test-mmap', mount/'file-4097', '/tmp/tail', mount)
+assert counter('clean_pages') == before + 1
+run('/test-mmap', mount/'hardlink', '/tmp/tail', mount)
+assert counter('clean_pages') == before + 1
+run('umount', mount)
+run('/mount_femtofs', 'data', mount)
+before = counter('clean_pages')
+with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+    list(pool.map(lambda _: run('/test-mmap', mount/'file-4097', '/tmp/tail', mount), range(8)))
+assert counter('clean_pages') == before + 1
+run('umount', mount)
+
+# File import disconnects from the source; remount retains the owned allocation.
 Path('/tmp/backing.img').write_bytes(raw)
-unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', '/tmp/backing.img']).decode().strip()
-writer = os.open('/dev/'+unit, os.O_RDWR)
-try:
-    run('/mount_femtofs', '/dev/'+unit, mount)
-    assert counter('snapshot_bytes') == len(raw) and counter('borrowed_bytes') == root_size
+run(ctl, 'add', 'copy', '/tmp/backing.img')
+Path('/tmp/backing.img').unlink()
+assert counter('snapshot_bytes') == len(raw)
+for _ in range(2):
+    run('/mount_femtofs', 'copy', mount)
     assert (mount/'identity').read_text() == 'FemtoFS data\n'
+    refuse(ctl, 'discard', 'copy')
     run('umount', mount)
-finally:
-    os.close(writer)
-run('mdconfig', '-d', '-u', unit)
+    assert counter('snapshot_bytes') == len(raw)
+refuse('kldunload', 'femtofs')
+run(ctl, 'discard', 'copy')
 assert counter('snapshot_bytes') == 0
+
+# Competing publications have one winner and no losing allocation leak.
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    results = list(pool.map(lambda _: subprocess.run(
+        [ctl, 'add', 'race', '/runtime/boot/data.img'], capture_output=True).returncode, range(2)))
+assert sorted(results) == [0, 1], results
+assert counter('snapshot_bytes') == len(raw)
+run(ctl, 'discard', 'race')
+# A mount/discard race can publish a claim or discard; never both.
+for _ in range(10):
+    run(ctl, 'add', 'race', '/runtime/boot/data.img')
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(subprocess.run, ['/mount_femtofs', 'race', str(mount)], capture_output=True)
+        b = pool.submit(subprocess.run, [ctl, 'discard', 'race'], capture_output=True)
+        mounted, discarded = a.result().returncode == 0, b.result().returncode == 0
+    assert mounted != discarded
+    if mounted:
+        assert (mount/'identity').read_text() == 'FemtoFS data\n'
+        run('umount', mount)
+        run(ctl, 'discard', 'race')
+assert counter('snapshot_bytes') == 0
+run('/test-bank', '/runtime/boot/data.img')
 run(sys.executable, '/test-mount.py', '/makefemtofs', '/mount_femtofs', '/test-mmap', '/tmp')
-assert counter('snapshot_bytes') == 0 and counter('borrowed_bytes') == root_size
-run('mdconfig', '-d', '-u', 1)
+assert counter('snapshot_bytes') == 0 and counter('borrowed_bytes') == loader_total
+pages = counter('released_pages')
+# v_page_count increases when reserved boot pages are returned to VM management.
+managed_before = int(subprocess.check_output(['sysctl', '-n', 'vm.stats.vm.v_page_count']))
+run(ctl, 'discard', 'data')
+assert counter('released_pages') == pages + len(raw)//4096
+managed_after = int(subprocess.check_output(['sysctl', '-n', 'vm.stats.vm.v_page_count']))
+assert managed_after - managed_before == len(raw)//4096, (managed_before, managed_after)
+assert counter('borrowed_bytes') == root_size
+metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
+assert '/boot/data.img' not in metadata
+refuse('/mount_femtofs', 'data', mount)
+# A discarded label can be reused, now with imported storage.
+run(ctl, 'add', 'data', '/runtime/boot/data.img')
+run('/mount_femtofs', 'data', mount)
+assert (mount/'identity').read_text() == 'FemtoFS data\n'
+run('umount', mount)
+run(ctl, 'discard', 'data')
+if Path('/etc/guest-mode').read_text() == 'control':
+    run(ctl, 'discard', 'root')
+    assert counter('borrowed_bytes') == 0 and counter('metadata_bytes') == 0
+    run('kldunload', 'femtofs')
+    assert not Path('/dev/femtofs').exists()
+    run('kldload', '/boot/kernel/femtofs.ko')
+    assert len(subprocess.check_output([ctl, 'list']).splitlines()) == 1
+    run('kldunload', 'femtofs')
 print('FEMTOFS_BOOT ALL TESTS PASSED', flush=True)
 # END File: ko/test-boot-guest.py

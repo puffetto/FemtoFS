@@ -1,4 +1,57 @@
-# FemtoFS kernel backing and boot design
+# FemtoFS resident-bank design
+
+Implementation target: stock FreeBSD 15.1 amd64, without md or GEOM patches.
+This replaces the historical md-hook design below. Implementation/verification
+is in progress; see `tmp/NODEV-execution.md` for observed results.
+
+A named bank owns one fully resident image and its validated decoded metadata.
+Loader images of type `femtofs_image` reuse their original allocation without
+copying. `femtoctl add LABEL PATH` synchronously imports a regular file or readable
+character device into wired RAM. Only labels are mount sources; device paths
+are import sources. No automatic device-mount fallback remains.
+
+`femtofs.bank.LABEL=EXACT_LOADER_NAME` assigns labels through the kernel environment.
+Root uses `vfs.root.mountfrom="femtofs:"` and options `ro,clean,bank=LABEL`.
+Registration precedes root mount. Labels are case-sensitive, 1–63 ASCII letters,
+digits, underscores or hyphens. Original preload names must be unambiguous across
+all types, since deletion is by name. Invalid registrations preserve loader memory.
+
+`mount_femtofs LABEL DIRECTORY` claims a bank; only one independent mount is
+allowed. Unmount releases mount state and clean copies, retaining the bank.
+`femtoctl discard LABEL` refuses claimed banks and otherwise frees decoded
+metadata and backing. Preloads use stock `preload_delete_name`; imported buffers
+use their matching allocation release. Module unload refuses while banks or
+control operations exist. Explicit discard precedes unload.
+
+The module-owned `/dev/femtofs` provides privileged add/list/discard ioctls, with
+no image data mapping interface. The importer uses a referenced read-only fd,
+validates a completed private copy before publication and closes its source.
+A source modified during import is not an atomic snapshot; use a quiescent source.
+All current backing stays resident and has a contiguous kernel virtual view;
+physical contiguity is not required. Asynchronous VM-object imports are deferred
+in `tmp/ASYNCH.md`, with no advance pager framework in this implementation.
+
+Decoded metadata belongs to the bank. Clean/leaking policy, vnodes and the clean
+page cache belong to the mount. Pager references retain the mount claim until
+aliases disappear. A clean tail page is reused after an earlier process exits;
+unmount frees the cache. Bank byte accounting persists until discard.
+
+Delivery sequence: update instructions/design, compile and test locally, commit
+and push, pull on toolbox, native build and disposable stock-kernel QEMU tests.
+Do not replace the host kernel. Acceptance includes root boot, file/device
+imports, retained remount, failure/race cleanup and measured preload reclamation.
+The detailed checklist is `tmp/NODEV-plan.md`. Private `fsck/` code is not accessed.
+
+Dirty mode, private writable/COW mappings, fully dynamic root, forced unmount,
+NFS export, FreeBSD 14.x and alternate native architectures remain outside scope.
+Exec/sendfile can still use the ordinary vnode cache; direct mmap page reuse does
+not imply all file consumers avoid copies.
+
+## Historical patched-md design and evidence (superseded)
+
+The remainder records the previous implementation only. Its interface, build
+requirements and acceptance results do not describe or verify resident banks.
+
 
 ## Contract
 

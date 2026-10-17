@@ -59,6 +59,9 @@ for i in range(rootsize):
     if raw[obj] == 4:
         obj = 128 + u32(obj+4)*16
     files[name] = u32(obj+4), u32(obj+8)
+ctl = helper.with_name("femtoctl")
+label = "matrix"
+banked = False
 unit = None
 mounted = False
 try:
@@ -68,12 +71,14 @@ try:
     run(builder, '--temp-dir', base, empty, empty_image)
     unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(empty_image)]).decode().strip()
     assert unit.startswith('md') and unit[2:].isdigit()
-    run(helper, '/dev/'+unit, mountpoint); mounted = True
+    run(ctl, 'add', label, '/dev/'+unit); banked = True
+    run(helper, label, mountpoint); mounted = True
     assert list(mountpoint.iterdir()) == [] and mountpoint.stat().st_nlink == 2
     run('umount', mountpoint); mounted = False
     run('mdconfig', '-d', '-u', unit); unit = None
+    run(ctl, 'discard', label); banked = False
     print('empty root mounted with default clean mode', flush=True)
-    # Real mount rejection must release GEOM and allocation state each time.
+    # Import rejection must release source references and private allocations.
     malformed = []
     for byteoff in (0, 5, 7, 12, 67, 72):
         corrupt = bytearray(raw)
@@ -96,23 +101,22 @@ try:
         damaged.write_bytes(corrupt)
         unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(damaged)]).decode().strip()
         assert unit.startswith('md') and unit[2:].isdigit()
-        result = subprocess.run([str(helper), '/dev/'+unit, str(mountpoint)], capture_output=True)
+        result = subprocess.run([str(ctl), 'add', label, '/dev/'+unit], capture_output=True)
         assert result.returncode != 0, f'corrupted image {index} mounted'
         run('mdconfig', '-d', '-u', unit); unit = None
-    print(f'{len(malformed)} malformed-image mounts rejected and providers detached', flush=True)
+    print(f'{len(malformed)} malformed-image imports rejected and providers detached', flush=True)
     for sector in (512, 4096):
         unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(image), '-S', str(sector)]).decode().strip()
         assert unit.startswith('md') and unit[2:].isdigit()
         device = '/dev/' + unit
         bad = subprocess.run([str(helper), '-o', 'dirty', device, str(mountpoint)], capture_output=True)
         assert bad.returncode != 0, 'deferred dirty mode was accepted'
+        run(ctl, 'add', label, device); banked = True
+        run('mdconfig', '-d', '-u', unit); unit = None
         for mode in ('clean', 'leaking'):
-            run(helper, '-o', mode, device, mountpoint)
+            run(helper, '-o', mode, label, mountpoint)
             mounted = True
             run(probe.with_name('test-directory'), mountpoint)
-            refused = subprocess.run([str(builder), '--device', '--temp-dir', str(base),
-                                      str(source), device], capture_output=True)
-            assert refused.returncode != 0 and b'output device is mounted' in refused.stderr
             seen = 0
             for original in [source, *source.rglob('*')]:
                 rel = original.relative_to(source)
@@ -194,11 +198,13 @@ for path in ('private', 'hidden/promoted'):
             print(f'pager: {direct_after-direct_before} direct faults; exactly {len(copied_sources)} shared clean pages', flush=True)
             run('umount', mountpoint); mounted = False
             print(f'{mode}, sector={sector}: {seen} objects; metadata, reads, names, FIFO, concurrency and mmap passed', flush=True)
-        run('mdconfig', '-d', '-u', unit); unit = None
+        run(ctl, 'discard', label); banked = False
 finally:
     # Preserve artifacts if cleanup fails; never detach a still-mounted provider.
     if mounted:
         run('umount', mountpoint)
+    if banked:
+        run(ctl, 'discard', label)
     if unit:
         run('mdconfig', '-d', '-u', unit)
     shutil.rmtree(base)

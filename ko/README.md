@@ -1,128 +1,125 @@
-# FreeBSD module
+# FreeBSD resident-bank module
 
-The build guard accepts FreeBSD 15.1 and later within 15.x; runtime verification
-currently covers 15.1. FreeBSD 14.x and `dirty` mode are deferred.
-The on-disk contract is [specification.md](../specification.md).
-The [kernel design](design.md) specifies the required single-copy boot-image
-backing and the md interface implemented in the author's FreeBSD fork. Mounts
-borrow preloaded image pages; EOPNOTSUPP automatically selects the original
-snapshot path for file-backed md and other unsupported providers.
+Target: stock FreeBSD 15.1 amd64. The build guard accepts 1501000–1599999; later
+releases are not automatically verified. Dirty mode and 14.x are deferred.
+See [design.md](design.md) and [specification.md](../specification.md).
+Resident-bank implementation is undergoing native verification; results are in
+`tmp/NODEV-execution.md`. Previous patched-md results are historical.
 
-Build the portable decoder and run its regressions locally, from the repository root:
+## Build and use
+
+Run portable checks locally, commit/push, then pull and build on FreeBSD:
 
 ```sh
 make -f ko/Makefile.host
 python3 ko/test-image.py tmp/notes-audit-build/makefemtofs tmp/ko-host/check-image tmp/ko-host
 ```
 
-Commit and push locally before pulling and building on FreeBSD. Native builds use
-the patched kernel sources and BSD make; keep output under `tmp/`. The running
-kernel must provide MD_PRELOAD_API_VERSION=1 (the fork's md hooks); an unpatched
-kernel cannot load this module:
+Native build against matching stock sources, with output kept under `tmp/`:
 
 ```sh
-mkdir -p tmp/ko-native
-env MAKEOBJDIR="$PWD/tmp/ko-native" make -C ko SYSDIR="$PWD/tmp/freebsd-src/sys"
-env MAKEOBJDIR="$PWD/tmp/ko-native" make -C ko -f Makefile.mount
-sudo kldload "$PWD/tmp/ko-native/femtofs.ko"
-sudo tmp/ko-native/mount_femtofs -o clean /dev/mdN /existing/mountpoint
-```
-
-Use only an explicitly allocated test provider, and unmount it before detaching
-that provider or unloading the module. No installation into `/boot/kernel` or
-changes to boot configuration are needed for testing.
-
-For a preloaded md, the mount borrows and validates the original loader allocation,
-with no image-sized copy. Its md hold prevents writes and forced detach until
-unmount. Only EOPNOTSUPP selects the existing wired snapshot fallback; other
-borrowing errors and invalid borrowed images fail the mount. The fallback costs
-one image-sized allocation; allocation failure returns `ENOMEM`.
-Metadata is decoded once. Lookup uses the
-image's hash chains and the VFS namecache. Hardlinks retain canonical inode
-identity; directories synthesize `.` and `..`; FIFOs use FreeBSD's FIFO operations.
-Times are zero because this format does not store timestamps.
-
-Aligned mmap pages directly alias the selected backing's physical pages. Partial clean
-tails and unaligned file pages are copied lazily, zero-filled, and cached by blob
-offset and page index. Deduplicated files share that cache while retaining their
-distinct inode identity. `leaking` exposes only validated public-part pages; private
-payloads use clean behavior. Larger VM pages force clean behavior. The standard
-vnode pager remains available for kernel consumers such as executable loading and
-sendfile. `fadvise` is accepted as a hint; the image is already resident.
-Active MAC access/lookup/open/mmap policies also force clean behavior at mount.
-`vfs.femtofs.direct_faults` and `vfs.femtofs.clean_pages` expose cumulative pager
-counters for checking direct-page use and copied-page cache sharing.
-`borrowed_bytes`, `snapshot_bytes` and `clean_bytes` under the same sysctl node
-report live backing/copy usage; `borrowed_faults` counts direct faults from
-original preloaded pages. With bootverbose, each mount logs its backing address
-and ownership so the boot regression can compare it with the loader's md address.
-
-The custom mmap entry point rejects writable mappings and prevents later write
-permission upgrades. Pager references keep the vnode and mount alive after the
-descriptor closes. Forced unmount is deliberately unsupported; normal unmount
-returns busy while files or mappings retain references.
-
-Validation includes all structural checks, metadata hash, terminators, interval
-overlap, public/private visibility and own-anchor reachability. It omits the
-optional image hash and the explicitly optional canonical-byte checks for global
-padding and content-equality deduplication. Higher major-1 revisions are accepted
-with unknown extensions ignored as required by the format.
-
-One interface limitation remains under discussion: FreeBSD normalizes unaligned
-mmap offsets before calling filesystem file operations. A standalone module sees
-the normalized offset and cannot enforce the specification's rejection of the
-original unaligned request. The original offset rule requires a kernel change or
-an explicit scope exception; it is not claimed as implemented here.
-
-Kernel compilation and mounted integration results are recorded in the local
-`tmp/REVIEW-execution.md`; portable tests alone do not establish kernel correctness.
-
-To run the disposable-provider mount matrix after loading the module:
-
-```sh
-cc -Wall -Wextra -Werror -g ko/test-mmap.c -o tmp/ko-native/test-mmap
-cc -Wall -Wextra -Werror -g ko/test-directory.c -o tmp/ko-native/test-directory
-sudo python3 ko/test-mount.py tmp/ko-build/makefemtofs \
-  tmp/ko-native/mount_femtofs tmp/ko-native/test-mmap tmp
+mkdir -p tmp/nodev-native
+env MAKEOBJDIR="$PWD/tmp/nodev-native" make -C ko SYSDIR=/usr/src/sys
+env MAKEOBJDIR="$PWD/tmp/nodev-native" make -C ko -f Makefile.mount
+env MAKEOBJDIR="$PWD/tmp/nodev-native" make -C ko -f Makefile.ctl
+sudo kldload "$PWD/tmp/nodev-native/femtofs.ko"
+sudo tmp/nodev-native/femtoctl add data /path/to/data.0fs
+sudo tmp/nodev-native/femtoctl list
+sudo tmp/nodev-native/mount_femtofs -o clean data /existing/mountpoint
+sudo umount /existing/mountpoint
+sudo tmp/nodev-native/femtoctl discard data
 sudo kldunload femtofs
 ```
 
-The harness verifies both mount modes at 512/4096-byte provider sectors, malformed
-mount rejection, mounted-provider overwrite refusal, directory cookies, metadata,
-unprivileged access, hardlinks, FIFO traffic, concurrent lookups, and mmap page
-contents, read-only protections, closed-descriptor lifetime and EOF faults. Pager
-counters check actual direct-page use and sharing of clean copies. All providers
-and mounts belong to the test; cleanup failure retains backing files.
+`add` copies the complete image into wired RAM, validates and publishes it. The
+source can be a regular file or readable, seekable character device, including
+a GEOM disk. Devices must have compatible read alignment. Source references are
+released after import; later changes/detach cannot affect the bank. Use a quiescent
+source for a coherent snapshot during copying. Allocation failure returns ENOMEM.
+Asynchronous imports are not implemented and are never silently copied.
 
-The root-boot regression reuses the boot artifacts from the fork's
-`tools/test/md_preload/run.sh` regression. Run it as an ordinary user on toolbox
-with a new output directory:
+Labels contain 1–63 ASCII letters, digits, underscores or hyphens. Mounts accept
+labels only; direct device mounts and the old fallback path are removed. The
+helper does not resolve the label as a path. Normal helper/fstab dispatch uses:
 
-```sh
-python3 ko/test-boot.py tmp/md-guest-4 tmp/ko-build/makefemtofs \
-  tmp/freebsd-src tmp/femtofs-boot-test
+```text
+data /existing/mountpoint femtofs ro,clean 0 0
 ```
 
-It builds the module and static probes, boots a FemtoFS root through the loader,
-checks a second preloaded image in both modes, and runs the file-backed matrix.
-It compares mount backing addresses against md's original loader addresses and
-checks live snapshot/clean-copy accounting, failed-mount cleanup and busy-provider
-rejection. QEMU uses TCG with no guest network and preserves its console log.
-The root init and probes are static; Python, the builder and their shared libraries
-live on a separate UFS test volume. This does not establish a fully dynamic FemtoFS
-root: writable private mmap remains rejected by the current contract.
+One independent mount may claim a bank. Unmount retains backing and decoded
+metadata. Discard returns EBUSY while claimed; module unload requires all banks
+to be discarded. Clean-page caches are per mount and freed on unmount.
+`/dev/femtofs` is an administrator-only ioctl endpoint, not an image device.
 
-The decoder can also run under coverage-guided fuzzing:
+## Loader banks and root boot
 
-```sh
-cc -O1 -g -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
-  ko/image.c ko/fuzz-image.c -o tmp/ko-native/fuzz-image
-# Place valid images from makefemtofs in the corpus first.
-mkdir -p tmp/ko-fuzz-images tmp/ko-fuzz-artifacts
-tmp/ko-native/fuzz-image -seed=20261014 -max_len=1048576 -max_total_time=600 \
-  -artifact_prefix=tmp/ko-fuzz-artifacts/ tmp/ko-fuzz-images
+Loader allocations are reused without a second full-image copy. Use the distinct
+`femtofs_image` type so stock md does not expose a writable frontend:
+
+```text
+load /boot/kernel/femtofs.ko
+load -t femtofs_image /boot/root.0fs
+load -t femtofs_image /boot/data.0fs
+set femtofs.bank.root=/boot/root.0fs
+set femtofs.bank.data=/boot/data.0fs
+set vfs.root.mountfrom="femtofs:"
+set vfs.root.mountfrom.options="ro,clean,bank=root"
+boot
 ```
 
-NFS export and forced unmount are not supported by this initial module. Native
-runtime coverage currently targets amd64 with 4096-byte VM pages; alternate VM
-page sizes have portable policy tests, not kernel execution evidence.
+The environment maps labels to exact loader-recorded names, consumed on module
+initialization. Names must be unique across preload types and allocations cannot
+be registered under multiple labels. Extents must be VM-page aligned at both ends
+and cover a valid image. Failed registrations log errors and preserve preload
+memory; unregistered invalid records remain reserved until reboot.
+
+Discard releases a loader bank through stock preload deletion, including its
+metadata record. amd64 bootstrap-page release is the tested target. A discarded
+bank cannot be remounted unless populated again. No md/GEOM/kernel patch is needed.
+
+## Mapping behavior and accounting
+
+Eligible mmap pages alias bank physical pages. Partial clean tails and unaligned
+file pages are copied lazily, zero-filled and shared by stored blob/page within
+the mount. The cache persists after a process exits. `leaking` exposes only public
+spill; private payloads use clean behavior. Larger VM pages and active MAC policies
+force clean behavior. `fadvise` is a hint; current backing is already resident.
+
+`vfs.femtofs.borrowed_bytes` counts logical loader-bank bytes, `snapshot_bytes`
+counts imported wired allocations, and `metadata_bytes` counts decoded nodes/blobs.
+They include unmounted banks. `clean_bytes` counts mount clean copies; `clean_pages`,
+`direct_faults` and `borrowed_faults` are cumulative. `released_pages` counts complete
+preload pages passed to stock reclamation, not a global free-memory measurement.
+`femtoctl list` distinguishes image size and retained allocation extent.
+
+Writable mmap and later write upgrades are rejected. Pager vnode references keep
+mounts/banks alive after fd close. Busy/forced unmounts are refused. Exec/sendfile
+can use the ordinary vnode cache; the direct-mmap path does not make all consumers
+zero-copy. Fully dynamic root/private writable COW remains outside this contract.
+
+Validation includes structural checks, metadata hash, terminators, overlaps,
+visibility and reachability. Optional whole-image hash and global canonical-byte
+checks remain omitted. Unknown compatible metadata extensions are ignored.
+Original unaligned mmap offsets are normalized by FreeBSD before filesystem entry;
+rejection of the original offset remains an unresolved contract limitation.
+
+## Disposable verification
+
+Use a stock boot tree and matching source tree. No host reboot or boot installation:
+
+```sh
+python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-root
+python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-control control
+python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-reverse reverse
+```
+
+The harness builds module/static tools, boots QEMU without networking, and keeps
+console logs. Root init/probes are static; Python/builder libraries run from UFS.
+The control guest exercises final reclamation and module unload/reload. Tests
+cover loader banks, synchronous imports, races, retained remount, clean-tail reuse,
+filesystem operations, and the converted 512/4096-sector import matrix. Only
+resources created by each run are cleaned up. Private `fsck/` tests are not used.
+
+Native arm64/alternate VM pages, active MAC policy execution, NFS export and forced
+unmount remain outside current native acceptance. Source/build checks alone do
+not establish runtime behavior; consult the execution log for actual results.

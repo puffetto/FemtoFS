@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # File: ko/test-boot.py
 # Created by Andrea "Nemesi" Cocito on 16/10/2026
-# Reuse the md regression's boot disk to test a FemtoFS root and both backing paths.
+# Boot stock FreeBSD with resident banks, imports and explicit reclamation.
 import ast
 import os
 from pathlib import Path
@@ -17,19 +17,25 @@ def run(*args, **kw):
     return subprocess.run([str(a) for a in args], check=True, **kw)
 
 
-if platform.system() != 'FreeBSD' or len(sys.argv) != 5:
-    sys.exit('usage on FreeBSD: test-boot.py md-guest-directory builder freebsd-src new-work-directory')
-base, builder, src, work = [Path(p).resolve() for p in sys.argv[1:]]
+if platform.system() != 'FreeBSD' or len(sys.argv) not in (5, 6):
+    sys.exit('usage on FreeBSD: test-boot.py stock-boot-directory builder stock-src new-work-directory [control|reverse]')
+base, builder, src, work = [Path(p).resolve() for p in sys.argv[1:5]]
+mode = sys.argv[5] if len(sys.argv) == 6 else "root"
+assert mode in ("root", "reverse", "control")
 repo = Path(__file__).resolve().parent.parent
 work.mkdir()
 build, root, stage, data = (work / n for n in ('module', 'root', 'stage', 'data'))
 build.mkdir(); root.mkdir(); data.mkdir()
-# The existing md regression supplies the tested kernel, loader and disk layout.
+# Stock kernel and loader, with only the guest's required modules.
 stage.mkdir()
-shutil.copytree(base/'root/boot', stage/'boot', copy_function=shutil.copy)
+shutil.copytree(base, stage/'boot', copy_function=shutil.copy,
+                ignore=shutil.ignore_patterns('kernel', 'kernel.old', 'modules', 'firmware', 'efi'))
+(stage/'boot/kernel').mkdir()
+for name in ('kernel', 'tmpfs.ko', 'nullfs.ko'):
+    shutil.copy(base/'kernel'/name, stage/'boot/kernel'/name)
 env = dict(os.environ, MAKEOBJDIR=str(build))
 run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', env=env)
-for name in ('mount_femtofs', 'test-mmap', 'test-directory'):
+for name in ('mount_femtofs', 'femtoctl', 'test-bank', 'test-mmap', 'test-directory'):
     run('cc', '-static', '-Wall', '-Wextra', '-Werror', '-g', repo/f'ko/{name}.c', '-o', root/name)
 shutil.copy(build/'femtofs.ko', stage/'boot/kernel/femtofs.ko')
 
@@ -58,7 +64,7 @@ for name in ('usr', 'lib', 'libexec'):
 (root/'makefemtofs').symlink_to('/runtime/makefemtofs')
 shutil.copy('/rescue/rescue', root/'rescue/rescue')
 for name in ('sh', 'init', 'mount', 'umount', 'sysctl', 'mdconfig', 'dd', 'md5',
-             'echo', 'reboot', 'sync'):
+             'cat', 'echo', 'reboot', 'sync', 'kldload', 'kldunload', 'kenv'):
     os.link(root/'rescue/rescue', root/'rescue'/name)
 os.link(root/'rescue/rescue', root/'bin/sh')
 os.link(root/'rescue/rescue', root/'bin/echo')
@@ -66,7 +72,10 @@ os.link(root/'rescue/rescue', root/'sbin/init')
 os.link(root/'rescue/rescue', root/'sbin/mount')
 shutil.copy('/etc/login.conf', root/'etc/login.conf')
 shutil.copy('/var/run/ld-elf.so.hints', root/'var/run/ld-elf.so.hints')
-(root/'etc/fstab').write_text('/dev/md0 / femtofs ro 0 0\n')
+(root/'etc/fstab').write_text('data /tmp/data femtofs ro,clean 0 0\n')
+(root/'etc/guest-mode').write_text(mode)
+os.link(root/'mount_femtofs', root/'sbin/mount_femtofs')
+(root/'etc/shells').write_text('/rescue/sh\n')
 (root/'etc/master.passwd').write_text(
     'root:*:0:0::0:0:Root:/root:/rescue/sh\n'
     'nobody:*:65534:65534::0:0:Unprivileged:/nonexistent:/rescue/sh\n')
@@ -77,7 +86,9 @@ for name in ('test-mount.py', 'test-boot-guest.py'):
 (root/'identity').write_text('FemtoFS root\n')
 (root/'etc/rc').write_text('''#!/rescue/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
-mount -t ufs -o ro /dev/ada0p2 /runtime || exit 1
+if [ "$(cat /etc/guest-mode)" != control ]; then
+    mount -t ufs -o ro /dev/ada0p2 /runtime || exit 1
+fi
 mount -t tmpfs -o mode=1777 tmpfs /tmp || exit 1
 export PYTHONDONTWRITEBYTECODE=1
 /usr/local/bin/python3.12 /test-boot-guest.py
@@ -105,21 +116,35 @@ raw[0] ^= 128
 (stage/'boot/bad-header.img').write_bytes(raw)
 raw[0] ^= 128; raw[12] ^= 128
 (stage/'boot/bad-metadata.img').write_bytes(raw)
-# Explicit loading order is required for a named root device. Lua module-table
-# iteration from loader.conf does not guarantee a filename-to-md-unit order.
+# Use explicit labels; reverse loading order in a separate acceptance boot.
 (stage/'boot/lua/loader.lua').chmod(0o644)
-(stage/'boot/lua/loader.lua').write_text('''require("cli")
-loader.perform("set console=comconsole")
-loader.perform("set comconsole_speed=115200")
-loader.perform("load /boot/kernel/kernel")
-loader.perform("load /boot/kernel/femtofs.ko")
-loader.perform("load -t md_image /boot/root.img")
-loader.perform("load -t md_image /boot/data.img")
-loader.perform("load -t md_image /boot/bad-header.img")
-loader.perform("load -t md_image /boot/bad-metadata.img")
-loader.perform("set vfs.root.mountfrom=femtofs:/dev/md0")
-loader.perform("boot -v")
-''')
+commands = ['set console=comconsole', 'set comconsole_speed=115200',
+            'load /boot/kernel/kernel', 'load /boot/kernel/tmpfs.ko',
+            'load /boot/kernel/nullfs.ko', 'load /boot/kernel/femtofs.ko']
+order = ['root', 'data', 'bad-header', 'bad-metadata']
+if mode == 'reverse':
+    order.reverse()
+for name in order:
+    commands += [f'load -t femtofs_image /boot/{name}.img',
+                 f'set femtofs.bank.{name}=/boot/{name}.img']
+commands += ['lsmod', 'set vfs.root.mountfrom=' +
+             ('ufs:/dev/ada0p2' if mode == 'control' else 'femtofs:'),
+             'set vfs.root.mountfrom.options=ro,clean,bank=root' if mode != 'control'
+             else 'set vfs.root.mountfrom.options=ro', 'boot -v']
+import json
+(stage/'boot/lua/loader.lua').write_text('require("cli")\n' + ''.join(
+    f'loader.perform({json.dumps(command)})\n' for command in commands))
+if mode == 'control':
+    # Keep the dynamic runtime already in stage; make /runtime refer to this root.
+    for child in root.iterdir():
+        if child.name in ('usr', 'lib', 'libexec', 'runtime'):
+            continue
+        target = stage/child.name
+        if child.is_dir():
+            shutil.copytree(child, target, dirs_exist_ok=True, copy_function=shutil.copy)
+        elif not target.exists():
+            shutil.copy(child, target, follow_symlinks=False)
+    (stage/'runtime').symlink_to('/')
 run('makefs', '-t', 'ffs', '-s', '512m', '-o', 'version=2', work/'root.ufs', stage)
 run('mkimg', '-s', 'gpt', '-b', '/boot/pmbr', '-p', 'freebsd-boot:=/boot/gptboot',
     '-p', f'freebsd-ufs:={work}/root.ufs', '-o', work/'guest.img')
@@ -132,10 +157,13 @@ with (work/'console.log').open('w') as log:
 output = (work/'console.log').read_text(errors='replace')
 assert result.returncode == 0 and 'FEMTOFS_BOOT ALL TESTS PASSED' in output, work/'console.log'
 assert 'FEMTOFS_BOOT GUEST_STATUS=0' in output and 'panic:' not in output
-preloads = {unit: address for unit, address in re.findall(
-    r'(md\d+): Preloaded image <[^>]+> \d+ bytes at (0x[0-9a-f]+)', output)}
-borrowed = re.findall(r'femtofs: /dev/(md\d+) borrowed \d+ bytes at (0x[0-9a-f]+)', output)
-assert {'md0', 'md1'} <= {unit for unit, _ in borrowed}, borrowed
-assert all(address == preloads[unit] for unit, address in borrowed)
-print(f'PASS: FemtoFS root boot, borrowed/fallback regressions and original backing identity; {work}/console.log')
+preloads = {label: address for label, address in re.findall(
+    r'femtofs: preload (\S+) <[^>]+> \d+ bytes at (0x[0-9a-f]+)', output)}
+mounted = re.findall(r'femtofs: bank (\S+) preload \d+ bytes at (0x[0-9a-f]+)', output)
+assert 'data' in preloads and 'root' in preloads
+assert all(address == preloads[label] for label, address in mounted)
+assert 'data' in {label for label, _ in mounted}
+if mode != 'control':
+    assert 'root' in {label for label, _ in mounted}
+print(f'PASS: stock FemtoFS {mode} boot, bank lifecycle/import regressions; {work}/console.log')
 # END File: ko/test-boot.py
