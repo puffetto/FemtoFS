@@ -105,13 +105,20 @@ shutil.copy(repo/'units/dual-hash-names.txt', root/'units/dual-hash-names.txt')
 (root/'etc/rc').write_text('''#!/bin/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
 /bin/echo "FEMTOFS_BOOT dynamic shell before runtime: $(/bin/cat /identity)"
-if [ "$(cat /etc/guest-mode)" != control ] && [ "$(cat /etc/guest-mode)" != audit ]; then
+mode=$(cat /etc/guest-mode)
+if [ "$mode" != control ] && [ "$mode" != audit ]; then
     mount -t ufs -o ro /dev/ada0p2 /runtime || exit 1
 fi
 mount -t tmpfs -o mode=1777 tmpfs /tmp || exit 1
 export PYTHONDONTWRITEBYTECODE=1
 /usr/local/bin/python3.12 /test-boot-guest.py
 status=$?
+if [ $status -eq 0 ]; then
+    umount /tmp || status=1
+    if [ "$mode" != control ] && [ "$mode" != audit ]; then
+        umount /runtime || status=1
+    fi
+fi
 echo "FEMTOFS_BOOT GUEST_STATUS=$status"
 sync
 reboot -p
