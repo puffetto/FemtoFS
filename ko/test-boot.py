@@ -80,7 +80,8 @@ for name in ('/bin/sh', '/bin/echo', '/bin/cat'):
     for library in re.findall(r'=> (/\S+)', out):
         target = root/Path(library).relative_to('/')
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(library, target)
+        if not target.exists():
+            shutil.copy(library, target)
 os.link(root/'rescue/rescue', root/'sbin/mount')
 os.link(root/'rescue/rescue', root/'sbin/mount_nullfs')
 shutil.copy('/etc/login.conf', root/'etc/login.conf')
