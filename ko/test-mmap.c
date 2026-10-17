@@ -157,8 +157,11 @@ int main(int argc, char **argv)
             if (!child) {
                 assert(!ptrace(PT_TRACE_ME, 0, NULL, 0));
                 raise(SIGSTOP);
-                assert(p[0] == changed &&
-                    p[length - 1] == (unsigned char)(bytes[length - 1] ^ 0x55));
+                if (kind)
+                    assert(p[0] == changed &&
+                        p[length - 1] == (unsigned char)(bytes[length - 1] ^ 0x55));
+                else
+                    assert(!memcmp(p, bytes, length));
                 _exit(0);
             }
             assert(waitpid(child, &status, 0) == child && WIFSTOPPED(status));
@@ -166,7 +169,10 @@ int main(int argc, char **argv)
                 size_t off = i ? length - 1 : 0;
                 changed = bytes[off] ^ 0x55;
                 io = (struct ptrace_io_desc){PIOD_WRITE_D, p + off, &changed, 1};
-                assert(!ptrace(PT_IO, child, (caddr_t)&io, 0) && io.piod_len == 1);
+                if (kind)
+                    assert(!ptrace(PT_IO, child, (caddr_t)&io, 0) && io.piod_len == 1);
+                else
+                    assert(ptrace(PT_IO, child, (caddr_t)&io, 0) == -1);
             }
             assert(!ptrace(PT_DETACH, child, (caddr_t)1, 0));
             assert(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
@@ -175,7 +181,7 @@ int main(int argc, char **argv)
             assert(pread(fd, &original, 1, 0) == 1 && original == bytes[0]);
             assert(!munmap(p, length));
         }
-        puts("cold mlock, msync invalidation and ptrace shared/private COW: passed");
+        puts("cold mlock, msync invalidation and ptrace shared refusal/private COW: passed");
     }
 #endif
     p = mmap(NULL, length + page, PROT_READ, MAP_SHARED, fd, 0);
