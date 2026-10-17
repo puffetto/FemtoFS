@@ -40,8 +40,8 @@ unmount frees the cache. Bank byte accounting persists until discard.
 Private mappings permit writable protection and later write upgrades through
 FreeBSD's VM copy-on-write path. The backing pager remains read-only: writes go
 to anonymous shadow pages, preserving the bank and shared clean-tail cache.
-Shared mappings remain read-only. Dynamic init/shell and their shared libraries
-must run from the bank in acceptance tests.
+Shared mappings remain read-only. Stock init must boot a normal dynamic shell
+with its runtime linker and shared libraries in the bank in acceptance tests.
 
 Counters distinguish loader/imported logical image bytes from retained allocation
 bytes. Loader fault/release counters name their origin explicitly; clean-page

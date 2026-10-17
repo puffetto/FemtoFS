@@ -51,6 +51,8 @@ One independent mount may claim a bank. Unmount retains backing and decoded
 metadata. Discard returns EBUSY while claimed; module unload requires all banks
 to be discarded. Clean-page caches are per mount and freed on unmount.
 `/dev/femtofs` is an administrator-only ioctl endpoint, not an image device.
+Mounts also require `PRIV_DRIVER` (root), even with `vfs.usermount=1`. An
+unprivileged caller cannot claim a loader bank by knowing its label.
 
 ## Loader banks and root boot
 
@@ -86,17 +88,30 @@ the mount. The cache persists after a process exits. `leaking` exposes only publ
 spill; private payloads use clean behavior. Larger VM pages and active MAC policies
 force clean behavior. `fadvise` is a hint; current backing is already resident.
 
-`vfs.femtofs.borrowed_bytes` counts logical loader-bank bytes, `snapshot_bytes`
-counts imported wired allocations, and `metadata_bytes` counts decoded nodes/blobs.
-They include unmounted banks. `clean_bytes` counts mount clean copies; `clean_pages`,
-`direct_faults` and `borrowed_faults` are cumulative. `released_pages` counts complete
-preload pages passed to stock reclamation, not a global free-memory measurement.
-`femtoctl list` distinguishes image size and retained allocation extent.
+Counters under `vfs.femtofs` distinguish retained storage from logical contents:
 
-Writable mmap and later write upgrades are rejected. Pager vnode references keep
-mounts/banks alive after fd close. Busy/forced unmounts are refused. Exec/sendfile
-can use the ordinary vnode cache; the direct-mmap path does not make all consumers
-zero-copy. Fully dynamic root/private writable COW remains outside this contract.
+| Counter | Meaning |
+| --- | --- |
+| `loader_bytes`, `imported_bytes` | Retained allocation bytes by bank origin |
+| `loader_image_bytes`, `imported_image_bytes` | Logical image bytes by bank origin |
+| `metadata_bytes` | Decoded node/blob allocation bytes |
+| `clean_bytes` | Live mount clean-page allocations |
+| `clean_pages` | Clean pages populated since module load |
+| `direct_faults`, `loader_faults` | Pager faults aliasing bank pages, all origins / loader only |
+| `loader_released_pages` | Complete preload pages passed to stock reclamation since module load |
+
+Bank byte counters include unmounted banks. `femtoctl list` reports each bank's
+logical size and allocation extent. The old `borrowed_bytes`, `snapshot_bytes`,
+`borrowed_faults` and `released_pages` names are removed. VM-managed private COW
+and ordinary vnode-cache pages are separate from these module allocation counters.
+
+Private writable mappings and later private write upgrades use FreeBSD VM COW:
+reads retain eligible direct bank pages, writes populate anonymous process-private
+pages. They cannot alter the bank, the shared clean cache or another process's
+mapping. Shared writable mmap and shared write upgrades remain rejected. Pager
+vnode references keep mounts/banks alive after fd close. Busy/forced unmounts are
+refused. Exec/sendfile can use the ordinary vnode cache; direct mmap does not make
+all consumers zero-copy. Clean/leaking tail rules apply to private mappings too.
 
 Validation includes structural checks, metadata hash, terminators, overlaps,
 visibility and reachability. Optional whole-image hash and global canonical-byte
@@ -115,7 +130,9 @@ python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-revers
 ```
 
 The harness builds module/static tools, boots QEMU without networking, and keeps
-console logs. Root init/probes are static; Python/builder libraries run from UFS.
+console logs. Stock init and probes are static; the normal dynamic `/bin/sh`,
+`echo`, `cat`, runtime linker and base libraries are stored in FemtoFS. The shell
+runs before the auxiliary UFS runtime is mounted. Python/builder live on UFS.
 The control guest exercises final reclamation and module unload/reload. Tests
 cover loader banks, synchronous imports, races, retained remount, clean-tail reuse,
 filesystem operations, and the converted 512/4096-sector import matrix. Only
@@ -146,7 +163,12 @@ unloads/reloads the module and confirms discarded banks stay absent.
 These tests do not inject allocator exhaustion, device read errors, malformed
 loader address records, or unload while an import is deliberately stalled.
 The resident cleanup and locking paths for those cases have source review, not
-runtime coverage. Other architectures, private COW/dynamic root and asynchronous
-imports remain outside this delivery. Root shutdown logs the existing unsupported
+runtime coverage. Other architectures and asynchronous imports remain outside this delivery. Root shutdown logs the existing unsupported
 forced-unmount error 45 before syncing and powering off; fixture/CTF diagnostics
 are retained in logs rather than presented as a warning-free run.
+
+The CLAUDEREVIEW2 follow-up adds private-write, mprotect, fork/independent-map
+isolation, private EOF/lifetime and root-only mount probes. A padded loader image
+checks that logical and allocation counters differ and that discard releases the
+whole extent. These checks require a new native run; the earlier results above
+predate this follow-up.

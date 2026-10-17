@@ -42,7 +42,7 @@
 
 static MALLOC_DEFINE(M_FEMTOFS, "femtofs", "femtofs mount and vnode data");
 static u_long ff_direct_faults, ff_clean_pages;
-static u_long ff_clean_bytes, ff_borrowed_faults;
+static u_long ff_clean_bytes, ff_loader_faults;
 SYSCTL_NODE(_vfs, OID_AUTO, femtofs, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "femtofs pager");
 SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, direct_faults, CTLFLAG_RD, &ff_direct_faults, 0,
     "Faults resolved by aliasing immutable image pages");
@@ -50,7 +50,7 @@ SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, clean_pages, CTLFLAG_RD, &ff_clean_pages, 0
     "Clean pages populated since module load");
 SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, clean_bytes, CTLFLAG_RD, &ff_clean_bytes, 0,
     "Live wired bytes allocated for clean mapping pages");
-SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, borrowed_faults, CTLFLAG_RD, &ff_borrowed_faults, 0,
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, loader_faults, CTLFLAG_RD, &ff_loader_faults, 0,
     "Direct faults resolved from original preloaded image pages");
 struct ff_mount {
     struct ff_bank *bank;
@@ -248,7 +248,7 @@ static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t
         sx_xunlock(&fs->cache_lock);
     } else {
         atomic_add_long(&ff_direct_faults, 1);
-        if (fs->bank->preload) atomic_add_long(&ff_borrowed_faults, 1);
+        if (fs->bank->preload) atomic_add_long(&ff_loader_faults, 1);
     }
     page = vm_page_getfake(pmap_kextract(address), VM_MEMATTR_DEFAULT);
     if (!copied && bootverbose && atomic_cmpset_int(&fs->bank->sampled, 0, 1))
@@ -271,7 +271,12 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     vm_object_t obj;
     vm_prot_t maxprot = VM_PROT_READ | VM_PROT_EXECUTE;
     int error;
-    if (prot & VM_PROT_WRITE) return EACCES;
+    /* vm_mmap_object adds MAP_COPY_ON_WRITE for private mappings, including
+     * initially read-only mappings that later gain write permission. */
+    if (!(flags & MAP_SHARED)) {
+        maxprot |= VM_PROT_WRITE;
+        capmax |= VM_PROT_WRITE; /* As in vn_mmap: private writes need only FREAD. */
+    }
     if (!(fp->f_flag & FREAD)) return EACCES;
     if (off > OFF_MAX || size > OFF_MAX - off || (off & PAGE_MASK)) return EINVAL;
     if ((error = vget(vp, LK_SHARED)) != 0) return error;
@@ -280,7 +285,9 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     if (prot & ~maxprot) { vput(vp); return EACCES; }
     error = mac_vnode_check_mmap(td->td_ucred, vp, prot, flags);
     if (error) { vput(vp); return error; }
-    obj = cdev_pager_allocate(FN(vp), OBJT_DEVICE, &ff_pager, size, prot, off, td->td_ucred);
+    /* The pager supplies immutable source pages; only VM shadow pages are writable. */
+    obj = cdev_pager_allocate(FN(vp), OBJT_DEVICE, &ff_pager, size,
+        prot & ~VM_PROT_WRITE, off, td->td_ucred);
     vput(vp);
     if (!obj) return ENOMEM;
     error = vm_mmap_object(map, addr, size, prot, maxprot, flags, obj, off, FALSE, td);
@@ -352,6 +359,8 @@ static int ff_mount(struct mount *mp)
     struct ff_bank *bank;
     char *from, *label;
     int error;
+    /* Banks expose privileged loader memory, even when usermount is enabled. */
+    if ((error = priv_check(curthread, PRIV_DRIVER))) return error;
     if (mp->mnt_flag & MNT_UPDATE) return EOPNOTSUPP;
     if (vfs_filteropt(mp->mnt_optnew, opts)) return EINVAL;
     if (vfs_flagopt(mp->mnt_optnew, "clean", NULL, 0) && vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) return EINVAL;

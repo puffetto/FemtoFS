@@ -32,15 +32,20 @@ static struct cdev *control;
 static unsigned active;
 static int stopping;
 static uint64_t generation;
-static u_long borrowed_bytes, snapshot_bytes, metadata_bytes, released_pages;
+static u_long loader_bytes, imported_bytes, loader_image_bytes, imported_image_bytes;
+static u_long metadata_bytes, loader_released_pages;
 SYSCTL_DECL(_vfs_femtofs);
-SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, borrowed_bytes, CTLFLAG_RD, &borrowed_bytes, 0,
-    "Logical image bytes in loader banks, including unmounted banks");
-SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, snapshot_bytes, CTLFLAG_RD, &snapshot_bytes, 0,
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, loader_bytes, CTLFLAG_RD, &loader_bytes, 0,
+    "Retained allocation bytes in loader banks, including unmounted banks");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, imported_bytes, CTLFLAG_RD, &imported_bytes, 0,
     "Wired allocation bytes in imported banks, including unmounted banks");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, loader_image_bytes, CTLFLAG_RD, &loader_image_bytes, 0,
+    "Logical image bytes in loader banks, including unmounted banks");
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, imported_image_bytes, CTLFLAG_RD, &imported_image_bytes, 0,
+    "Logical image bytes in imported banks, including unmounted banks");
 SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, metadata_bytes, CTLFLAG_RD, &metadata_bytes, 0,
     "Decoded bank node/blob allocation bytes");
-SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, released_pages, CTLFLAG_RD, &released_pages, 0,
+SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, loader_released_pages, CTLFLAG_RD, &loader_released_pages, 0,
     "Complete preload pages passed to bootstrap reclamation since load");
 
 static int valid_label(const char *s)
@@ -72,8 +77,11 @@ static int publish(struct ff_bank *b)
     else {
         b->next = banks; banks = b; generation++;
         metadata_bytes += metadata_size(b);
-        if (b->preload) borrowed_bytes += b->image.size;
-        else snapshot_bytes += b->extent;
+        if (b->preload) {
+            loader_bytes += b->extent; loader_image_bytes += b->image.size;
+        } else {
+            imported_bytes += b->extent; imported_image_bytes += b->image.size;
+        }
     }
     sx_xunlock(&bank_lock);
     return error;
@@ -213,13 +221,16 @@ static int bank_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int flags,
         else {
             *link = b->next; generation++;
             metadata_bytes -= metadata_size(b);
-            if (b->preload) borrowed_bytes -= b->image.size;
-            else snapshot_bytes -= b->extent;
+            if (b->preload) {
+                loader_bytes -= b->extent; loader_image_bytes -= b->image.size;
+            } else {
+                imported_bytes -= b->extent; imported_image_bytes -= b->image.size;
+            }
             /* Serialize preload metadata deletion as well as bank removal. */
             ff_destroy(&b->image);
             if (b->preload) {
                 preload_delete_name(b->source);
-                atomic_add_long(&released_pages, b->extent / PAGE_SIZE);
+                atomic_add_long(&loader_released_pages, b->extent / PAGE_SIZE);
                 if (bootverbose) printf("femtofs: discarded preload %s %zu pages\n", b->label, b->extent / PAGE_SIZE);
             } else kmem_free(__DECONST(uint8_t *, b->image.bytes), b->extent);
             free(b, M_FFBANK);

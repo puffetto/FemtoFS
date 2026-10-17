@@ -24,7 +24,7 @@ int main(int argc, char **argv)
     int fd, ef, kind, status;
     long page = sysconf(_SC_PAGESIZE);
     size_t length;
-    unsigned char *bytes, *p, *shared;
+    unsigned char *bytes, *p, *shared, *private;
     pid_t child;
     assert(argc == 4);
     fd = open(argv[1], O_RDONLY); ef = open(argv[2], O_RDONLY);
@@ -84,22 +84,31 @@ int main(int argc, char **argv)
         assert(!munmap(p, length));
     }
     p = mmap(NULL, length + page, PROT_READ, MAP_SHARED, fd, 0);
-    assert(p != MAP_FAILED);
+    private = mmap(NULL, length + page, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    assert(p != MAP_FAILED && private != MAP_FAILED);
     close(fd);
     if (length) assert(!memcmp(p, bytes, length));
 #ifdef __FreeBSD__
     errno = 0;
     assert(unmount(argv[3], 0) == -1 && errno == EBUSY);
 #endif
-    child = fork();
-    assert(child >= 0);
-    if (!child) {
-        signal(SIGBUS, bus);
-        (void)*(volatile unsigned char *)(p + length);
-        _exit(1);
+    for (kind = 0; kind < 2; kind++) {
+        child = fork();
+        assert(child >= 0);
+        if (!child) {
+            signal(SIGBUS, bus);
+            if (kind) *(volatile unsigned char *)(private + length) = 1;
+            else (void)*(volatile unsigned char *)(p + length);
+            _exit(1);
+        }
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
-    assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
     assert(!munmap(p, length + page));
+    if (length) { assert(!memcmp(private, bytes, length)); private[0] ^= 0xff; }
+#ifdef __FreeBSD__
+    assert(unmount(argv[3], 0) == -1 && errno == EBUSY);
+#endif
+    assert(!munmap(private, length + page));
     free(bytes);
     puts("mmap bytes, tails, shared protection, private COW/fork, descriptor lifetime and EOF: passed");
     return 0;

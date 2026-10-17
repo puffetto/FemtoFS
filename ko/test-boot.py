@@ -43,8 +43,8 @@ for name in ('mount_femtofs', 'femtoctl', 'test-bank', 'test-mmap', 'test-direct
     run('cc', '-static', '-Wall', '-Wextra', '-Werror', '-g', repo/f'ko/{name}.c', '-o', root/name)
 shutil.copy(build/'femtofs.ko', stage/'boot/kernel/femtofs.ko')
 
-# Dynamic test tools live on UFS: writable private library mappings are outside
-# FemtoFS's read-only mmap contract. Init and the filesystem probes are static.
+# Python and the builder live on UFS; the normal shell, runtime linker and base
+# libraries live in FemtoFS, so boot itself exercises private library mappings.
 python = Path(sys.executable).resolve()
 stdlib = Path(sysconfig.get_path('stdlib'))
 shutil.copytree(stdlib, stage/stdlib.relative_to('/'), copy_function=shutil.copy,
@@ -63,16 +63,24 @@ shutil.copy(builder, stage/'makefemtofs')
 
 for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'tmp', 'var/run'):
     (root/name).mkdir(parents=True, exist_ok=True)
-for name in ('usr', 'lib', 'libexec'):
-    (root/name).symlink_to('/runtime/'+name)
+(root/'usr').symlink_to('/runtime/usr')
+for name in ('lib', 'libexec'):
+    shutil.copytree(stage/name, root/name, copy_function=shutil.copy)
 (root/'makefemtofs').symlink_to('/runtime/makefemtofs')
 shutil.copy('/rescue/rescue', root/'rescue/rescue')
 for name in ('sh', 'init', 'mount', 'umount', 'sysctl', 'mdconfig', 'dd', 'md5',
              'cat', 'echo', 'reboot', 'sync', 'kldload', 'kldunload', 'kenv'):
     os.link(root/'rescue/rescue', root/'rescue'/name)
-os.link(root/'rescue/rescue', root/'bin/sh')
-os.link(root/'rescue/rescue', root/'bin/echo')
-os.link(root/'rescue/rescue', root/'sbin/init')
+# Stock init is static. Its /bin/sh interpreter and these utilities are dynamic.
+for name in ('/sbin/init', '/bin/sh', '/bin/echo', '/bin/cat'):
+    shutil.copy(name, root/name.lstrip('/'))
+for name in ('/bin/sh', '/bin/echo', '/bin/cat'):
+    out = run('ldd', name, capture_output=True, text=True).stdout
+    print(out, flush=True)
+    for library in re.findall(r'=> (/\S+)', out):
+        target = root/Path(library).relative_to('/')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(library, target)
 os.link(root/'rescue/rescue', root/'sbin/mount')
 os.link(root/'rescue/rescue', root/'sbin/mount_nullfs')
 shutil.copy('/etc/login.conf', root/'etc/login.conf')
@@ -89,8 +97,9 @@ for name in ('test-mount.py', 'test-boot-guest.py'):
     ast.parse((repo/'ko'/name).read_text())
     shutil.copy(repo/'ko'/name, root/name)
 (root/'identity').write_text('FemtoFS root\n')
-(root/'etc/rc').write_text('''#!/rescue/sh
+(root/'etc/rc').write_text('''#!/bin/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
+/bin/echo "FEMTOFS_BOOT dynamic shell before runtime: $(/bin/cat /identity)"
 if [ "$(cat /etc/guest-mode)" != control ]; then
     mount -t ufs -o ro /dev/ada0p2 /runtime || exit 1
 fi
@@ -116,6 +125,9 @@ os.mkfifo(data/'fifo', 0o644)
 for tree, name in ((root, 'root'), (data, 'data')):
     run(builder, '--root-uid', '0', '--root-gid', '0', '--temp-dir', work,
         tree, stage/f'boot/{name}.img')
+# The loader retains the whole record, while imports retain only logical bytes.
+with (stage/'boot/data.img').open('ab') as padded:
+    padded.write(bytes(8192))
 raw = bytearray((stage/'boot/data.img').read_bytes())
 raw[0] ^= 128
 (stage/'boot/bad-header.img').write_bytes(raw)
@@ -163,6 +175,7 @@ with (work/'console.log').open('w') as log:
 output = (work/'console.log').read_text(errors='replace')
 assert result.returncode == 0 and 'FEMTOFS_BOOT ALL TESTS PASSED' in output, work/'console.log'
 assert 'FEMTOFS_BOOT GUEST_STATUS=0' in output and 'panic:' not in output
+assert 'FEMTOFS_BOOT dynamic shell before runtime: FemtoFS root' in output
 preloads = {label: address for label, address in re.findall(
     r'femtofs: preload (\S+) <[^>]+> \d+ bytes at (0x[0-9a-f]+)', output)}
 mounted = re.findall(r'femtofs: bank (\S+) preload \d+ bytes at (0x[0-9a-f]+)', output)
