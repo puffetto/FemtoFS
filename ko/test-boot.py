@@ -18,10 +18,10 @@ def run(*args, **kw):
 
 
 if platform.system() != 'FreeBSD' or len(sys.argv) not in (5, 6):
-    sys.exit('usage on FreeBSD: test-boot.py stock-boot-directory builder stock-src new-work-directory [control|reverse|audit]')
+    sys.exit('usage on FreeBSD: test-boot.py stock-boot-directory builder stock-src new-work-directory [control|reverse|audit|root-smoke]')
 base, builder, src, work = [Path(p).resolve() for p in sys.argv[1:5]]
 mode = sys.argv[5] if len(sys.argv) == 6 else "root"
-assert mode in ("root", "reverse", "control", "audit")
+assert mode in ("root", "reverse", "control", "audit", "root-smoke")
 repo = Path(__file__).resolve().parent.parent
 work.mkdir()
 build, root, stage, data = (work / n for n in ('module', 'root', 'stage', 'data'))
@@ -65,8 +65,8 @@ shutil.copy(builder, stage/'makefemtofs')
 
 for name in ('dev', 'etc', 'bin', 'sbin', 'rescue', 'runtime', 'units', 'var/run'):
     (root/name).mkdir(parents=True, exist_ok=True)
-(root/'tmp').mkdir() if mode in ('control', 'audit') else (root/'tmp').symlink_to('/runtime/tmp')
-if mode not in ('control', 'audit'):
+(root/'tmp').mkdir() if mode in ('control', 'audit', 'root-smoke') else (root/'tmp').symlink_to('/runtime/tmp')
+if mode not in ('control', 'audit', 'root-smoke'):
     (stage/'tmp').mkdir()
 (root/'usr').symlink_to('/runtime/usr')
 for name in ('lib', 'libexec'):
@@ -106,6 +106,13 @@ for name in ('test-mount.py', 'test-boot-guest.py'):
 shutil.copy(repo/'units/dual-hash-names.txt', root/'units/dual-hash-names.txt')
 (root/'identity').write_text('FemtoFS root\n')
 (root/'etc/rc').write_text('''#!/bin/sh
+export PATH=/rescue:/bin:/sbin
+/bin/echo "FEMTOFS_BOOT dynamic shell before runtime: $(/bin/cat /identity)"
+echo "FEMTOFS_BOOT ALL TESTS PASSED"
+echo "FEMTOFS_BOOT GUEST_STATUS=0"
+sync
+reboot -p
+''' if mode == 'root-smoke' else '''#!/bin/sh
 export PATH=/rescue:/bin:/sbin:/usr/local/bin:/usr/bin:/usr/sbin
 /bin/echo "FEMTOFS_BOOT dynamic shell before runtime: $(/bin/cat /identity)"
 mode=$(cat /etc/guest-mode)
@@ -190,6 +197,7 @@ with (work/'console.log').open('w') as log:
 output = (work/'console.log').read_text(errors='replace')
 assert result.returncode == 0 and 'FEMTOFS_BOOT ALL TESTS PASSED' in output, work/'console.log'
 assert 'FEMTOFS_BOOT GUEST_STATUS=0' in output and 'panic:' not in output
+assert 'lock order reversal:' not in output
 assert 'FEMTOFS_BOOT dynamic shell before runtime: FemtoFS root' in output
 preloads = {label: address for label, address in re.findall(
     r'femtofs: preload (\S+) <[^>]+> \d+ bytes at (0x[0-9a-f]+)', output)}
@@ -200,9 +208,11 @@ loader_addresses = dict((name, int(address, 16)) for address, name in re.findall
 assert all(int(address, 16) == 0xffffffff80000000 + loader_addresses[label]
            for label, address in preloads.items())
 samples = re.findall(r'femtofs: page data offset (\d+) physical (0x[0-9a-f]+)', output)
-assert samples and int(samples[0][1], 16) == loader_addresses['data'] + int(samples[0][0])
+if mode != 'root-smoke':
+    assert samples and int(samples[0][1], 16) == loader_addresses['data'] + int(samples[0][0])
 assert all(address == preloads[label] for label, address in mounted)
-assert 'data' in {label for label, _ in mounted}
+if mode != 'root-smoke':
+    assert 'data' in {label for label, _ in mounted}
 if mode not in ('control', 'audit'):
     assert 'root' in {label for label, _ in mounted}
 print(f'PASS: FemtoFS {mode} boot, bank lifecycle/import regressions; {work}/console.log')
