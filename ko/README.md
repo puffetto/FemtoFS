@@ -129,6 +129,7 @@ Use a stock boot tree and matching source tree. No host reboot or boot installat
 python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-root
 python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-control control
 python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-reverse reverse
+python3 ko/test-boot.py /boot tmp/ko-build/makefemtofs /usr/src tmp/nodev-audit audit
 ```
 
 The harness builds module/static tools, boots QEMU without networking, and keeps
@@ -138,7 +139,10 @@ runs before the auxiliary UFS runtime is mounted. Python/builder live on UFS.
 The control guest exercises final reclamation and module unload/reload. Tests
 cover loader banks, synchronous imports, races, retained remount, clean-tail reuse,
 filesystem operations, and the converted 512/4096-sector import matrix. Only
-resources created by each run are cleaned up. Private `fsck/` tests are not used.
+resources created by each run are cleaned up. Audit mode runs the aligned shared
+mapping security probe and first-touch timing from a UFS root, so it can also be
+used with a historical module that cannot host the current dynamic userspace.
+Private `fsck/` tests are not used.
 
 Native arm64/alternate VM pages, active MAC policy execution, NFS export and forced
 unmount remain outside current native acceptance. Source/build checks alone do
@@ -150,9 +154,9 @@ that form without a `bank` option. The helper and root boot use empty `from` plu
 
 ## Verification recorded 17 October 2026
 
-Production commit `c1d971c` passes local FreeBSD-target compilation with `-Werror`,
-13 portable decoder tests, native builds and stock-kernel QEMU root, UFS-control
-and reversed-loader runs.
+Production commit `bba303c`, exercised by the tests through `14c183e`, passes
+local FreeBSD-target compilation with `-Werror`, 13 portable decoder tests,
+native builds and stock-kernel QEMU root, UFS-control and reversed-loader runs.
 The root run passes 80 mmap probes, including private writes, write upgrades,
 fork isolation, descriptor lifetime and EOF; two additional aligned 2 MiB tests
 cover private COW and shared protection, including MADV_WILLNEED. It also passes
@@ -164,6 +168,19 @@ The normal dynamic shell, echo, cat, runtime linker and base libraries run from
 FemtoFS before the auxiliary runtime is mounted. Both unprivileged bank-mount
 forms return EPERM with vfs.usermount=1; root can subsequently mount the same bank.
 Private writes preserve read() contents and do not bypass noexec.
+Cold `mlock`, `msync(MS_INVALIDATE)` and debugger writes are also covered:
+debugger writes to read-only shared mappings are refused, while writes to private
+mappings use COW and leave the bank unchanged.
+
+The aligned shared-map probe reproduces a security defect in `09ac10a`: an amd64
+device-superpage prefault installed a writable mapping despite `PROT_READ`, and
+the attempted write changed the loader bank. The immutable view introduced in
+`c1d971c` makes the same write trap and preserves the bank. This matters on a
+FemtoFS root because modifying bank bytes can change data later read or executed
+by privileged processes. A 4 MiB first-touch QEMU/TCG microbenchmark measured
+median times of 9.91 ms without advice and 10.39 ms with `MADV_WILLNEED` before
+the fix, versus 16.07 ms and 15.94 ms after it. These numbers describe mapping
+fault cost, not warm access after page-table entries exist.
 
 The sampled data page matches the loader's physical address plus its image offset.
 The data fixture contains 4,259,840 logical bytes in a 4,268,032-byte preload:
@@ -176,9 +193,14 @@ The control guest additionally discards the root bank (13,492 pages), unloads an
 reloads the module, and verifies discarded banks stay absent. No panic, assertion
 failure or Python traceback appears in these passing runs.
 
-Not covered: INVARIANTS/WITNESS kernels, allocator exhaustion, device read-error
-injection, malformed loader address records, unload during a deliberately stalled
-import, active MAC policy execution, other architectures/VM page sizes or other
-FreeBSD releases. Asynchronous imports and dirty mode remain deferred. Root
+An INVARIANTS/WITNESS control guest initially found a missing
+`VSTATE_CONSTRUCTED` transition when publishing a new vnode. `bba303c` adds that
+transition; the same debug-kernel suite then passes without a vnode assertion,
+kernel panic or WITNESS diagnostic.
+
+Not covered: allocator exhaustion, device read-error injection, malformed loader
+address records, unload during a deliberately stalled import, active MAC policy
+execution, other architectures/VM page sizes or other FreeBSD releases.
+Asynchronous imports and dirty mode remain deferred. Root
 shutdown still reports unsupported forced unmount (45), then syncs and powers
 off. Expected fixture/CTF diagnostics remain in the logs.
