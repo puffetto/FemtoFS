@@ -47,6 +47,31 @@ int main(int argc, char **argv)
 #ifdef __FreeBSD__
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED));
     assert(!posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
+    if (getenv("FEMTOFS_TEST_SUPERPAGE_OFFSET")) {
+        size_t span = 2 * 1024 * 1024;
+        off_t off = strtoull(getenv("FEMTOFS_TEST_SUPERPAGE_OFFSET"), NULL, 10);
+        unsigned char original;
+        assert(off >= 0 && (uint64_t)off + span <= (uint64_t)st.st_size);
+        p = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ALIGNED(21), fd, off);
+        assert(p != MAP_FAILED && (uintptr_t)p % span == 0);
+        assert(!madvise(p, span, MADV_WILLNEED));
+        p[0] = bytes[off] ^ 0xff;
+        assert(pread(fd, &original, 1, off) == 1);
+        fprintf(stderr, "2 MiB private mapping preserves bank: %s\n", original == bytes[off] ? "yes" : "NO");
+        assert(original == bytes[off]);
+        assert(!munmap(p, span));
+        p = mmap(NULL, span, PROT_READ, MAP_SHARED | MAP_ALIGNED(21), fd, off);
+        assert(p != MAP_FAILED && !madvise(p, span, MADV_WILLNEED));
+        child = fork(); assert(child >= 0);
+        if (!child) {
+            signal(SIGSEGV, bus);
+            *(volatile unsigned char *)p ^= 0xff;
+            _exit(1);
+        }
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(!munmap(p, span));
+        puts("2 MiB aligned mappings and WILLNEED preserve COW/shared protection: passed");
+    }
 #endif
     for (kind = 0; kind < 2; kind++) {
         int flags = kind ? MAP_PRIVATE : MAP_SHARED;

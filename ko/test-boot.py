@@ -78,10 +78,11 @@ for name in ('/bin/sh', '/bin/echo', '/bin/cat'):
     out = run('ldd', name, capture_output=True, text=True).stdout
     print(out, flush=True)
     for library in re.findall(r'=> (/\S+)', out):
-        target = root/Path(library).relative_to('/')
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            shutil.copy(library, target)
+        for destination in (root, stage):
+            target = destination/Path(library).relative_to('/')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                shutil.copy(library, target)
 os.link(root/'rescue/rescue', root/'sbin/mount')
 os.link(root/'rescue/rescue', root/'sbin/mount_nullfs')
 shutil.copy('/etc/login.conf', root/'etc/login.conf')
@@ -115,7 +116,7 @@ reboot -p
 
 (data/'identity').write_text('FemtoFS data\n')
 (data/'hidden').mkdir(mode=0o700)
-for size in (0, 1, 4095, 4096, 4097, 8192, 10000):
+for size in (0, 1, 4095, 4096, 4097, 8192, 10000, 4194304):
     (data/f'file-{size}').write_bytes(bytes(i % 251 + 1 for i in range(size)))
     (data/f'file-{size}').chmod(0o644)
 (data/'private').write_bytes(b'secret' * 2000)

@@ -7,6 +7,7 @@ import errno
 import mmap
 import os
 from pathlib import Path
+import re
 import socket
 import struct
 import subprocess
@@ -87,6 +88,12 @@ for i in range(u32(56)):
         obj = 128 + u32(obj+4)*16
     files[name] = u32(obj+4), u32(obj+8)
 
+# Select a physically and virtually 2 MiB-aligned window in loader memory.
+metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
+record = metadata.split('value:\t/boot/data.img', 1)[1]
+address = int(re.search(r'MODINFO_ADDR.*?value:\s*(0x[0-9a-f]+)', record, re.S)[1], 16)
+large_offset = (-(address + files['file-4194304'][0])) % (2 * 1024 * 1024)
+
 for mode in ('clean', 'leaking'):
     clean_before = counter('clean_bytes')
     faults_before = counter('loader_faults')
@@ -113,7 +120,10 @@ for mode in ('clean', 'leaking'):
         leaking = mode == 'leaking' and size >= 4096 and off % 4096 == 0 and off+rounded <= u32(44)
         expected = raw[off:off+rounded] if leaking else raw[off:off+size] + bytes(rounded-size)
         Path('/tmp/expected').write_bytes(expected)
-        run('/test-mmap', mount/name, '/tmp/expected', mount)
+        env = dict(os.environ)
+        if name == 'file-4194304':
+            env['FEMTOFS_TEST_SUPERPAGE_OFFSET'] = str(large_offset)
+        run('/test-mmap', mount/name, '/tmp/expected', mount, env=env)
     with (mount/'file-10000').open('rb') as f:
         sender, receiver = socket.socketpair()
         try:
