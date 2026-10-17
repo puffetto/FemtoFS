@@ -150,7 +150,8 @@ if mode == 'control':
         elif not target.exists():
             shutil.copy(child, target, follow_symlinks=False)
     (stage/'runtime').symlink_to('/')
-run('makefs', '-t', 'ffs', '-s', '512m', '-o', 'version=2', work/'root.ufs', stage)
+run('makefs', '-t', 'ffs', '-s', '1g' if mode == 'control' else '512m',
+    '-o', 'version=2', work/'root.ufs', stage)
 run('mkimg', '-s', 'gpt', '-b', '/boot/pmbr', '-p', 'freebsd-boot:=/boot/gptboot',
     '-p', f'freebsd-ufs:={work}/root.ufs', '-o', work/'guest.img')
 cmd = ['qemu-system-x86_64', '-accel', 'tcg', '-m', '1536', '-smp', '2',
