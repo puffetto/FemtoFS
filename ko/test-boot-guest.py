@@ -124,6 +124,10 @@ for mode in ('clean', 'leaking'):
     refuse('/mount_femtofs', 'data', alias)
     run('mount', '-t', 'nullfs', mount, alias)
     assert (alias/'identity').read_bytes() == (mount/'identity').read_bytes()
+    alias_bytes = (alias/'identity').read_bytes()
+    Path('/tmp/alias-expected').write_bytes(alias_bytes + bytes((-len(alias_bytes)) % 4096))
+    run('/test-mmap', alias/'identity', '/tmp/alias-expected', alias)
+    print('FEMTOFS_BOOT nullfs mmap passed', flush=True)
     refuse('umount', mount)
     run('umount', alias)
     for name, (off, size) in files.items():
