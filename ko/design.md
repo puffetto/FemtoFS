@@ -237,3 +237,7 @@ file operations receive them; rejection of the original offset remains a
 separate contract issue. NFS export and forced filesystem unmount are unsupported.
 Alternate VM page sizes, arm64 and active MAC-policy fallback require additional
 native verification. This design does not silently resolve those separate items.
+
+Generic FreeBSD mount(8) sends the label in `from` directly; the module accepts
+that form without a `bank` option. The helper and root boot use empty `from` plus
+`bank=LABEL`. Conflicting selectors and device paths are rejected.

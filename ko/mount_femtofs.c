@@ -17,8 +17,11 @@ int main(int argc, char **argv)
     char *options = NULL, *option;
     int ch, n = 0;
     while ((ch = getopt(argc, argv, "o:")) != -1) {
-        if (ch != 'o' || options) errx(1, "usage: mount_femtofs [-o options] label directory");
-        options = optarg;
+        if (ch != 'o') errx(1, "usage: mount_femtofs [-o options] label directory");
+        char *joined;
+        if (asprintf(&joined, "%s%s%s", options ? options : "", options ? "," : "", optarg) < 0)
+            err(1, "mount options");
+        free(options); options = joined;
     }
     if (argc - optind != 2) errx(1, "usage: mount_femtofs [-o options] label directory");
     if (!realpath(argv[optind+1], path)) err(1, "realpath");

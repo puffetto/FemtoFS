@@ -357,8 +357,13 @@ static int ff_mount(struct mount *mp)
     if (vfs_flagopt(mp->mnt_optnew, "clean", NULL, 0) && vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) return EINVAL;
     from = vfs_getopts(mp->mnt_optnew, "from", &error);
     if (error) return error;
-    if (*from) return EINVAL;
     label = vfs_getopts(mp->mnt_optnew, "bank", &error);
+    /* Generic mount(8) supplies the label as from; root boot needs empty from
+     * to avoid the kernel's device wait and supplies a separate bank option. */
+    if (*from) {
+        if (error != ENOENT) return EINVAL;
+        label = from; error = 0;
+    }
     if (error) return error;
     if ((error = ff_bank_claim(label, &bank))) return error;
     fs = malloc(sizeof(*fs), M_FEMTOFS, M_WAITOK | M_ZERO);

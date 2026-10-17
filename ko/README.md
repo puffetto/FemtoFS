@@ -123,3 +123,7 @@ resources created by each run are cleaned up. Private `fsck/` tests are not used
 Native arm64/alternate VM pages, active MAC policy execution, NFS export and forced
 unmount remain outside current native acceptance. Source/build checks alone do
 not establish runtime behavior; consult the execution log for actual results.
+
+Generic FreeBSD mount(8) sends the label in `from` directly; the module accepts
+that form without a `bank` option. The helper and root boot use empty `from` plus
+`bank=LABEL`. Conflicting selectors and device paths are rejected.
