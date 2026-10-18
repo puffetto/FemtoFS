@@ -204,10 +204,11 @@ console logs. Stock init and probes are static; the normal dynamic `/bin/sh`,
 runs before the auxiliary UFS runtime is mounted. Python/builder live on UFS.
 The control guest exercises final reclamation and module unload/reload. Tests
 cover loader banks, synchronous imports, races, retained remount, clean-tail reuse,
-filesystem operations, and the converted 512/4096-sector import matrix. Only
-resources created by each run are cleaned up. Audit mode runs the aligned shared
-mapping security probe and first-touch timing from a UFS root, so it can also be
-used with a historical module that cannot host the current dynamic userspace.
+filesystem operations, nullfs mmap and dynamic execution in both mapping modes,
+and the converted 512/4096-sector import matrix. Only resources created by each
+run are cleaned up. Audit mode runs the aligned shared mapping security probe and
+first-touch timing from a UFS root, so it can also be used with a historical
+module that cannot host the current dynamic userspace.
 The independent `fsck/` implementation is not read or used to guide production
 changes. Its checker may be compiled and run as a black-box image verifier.
 
