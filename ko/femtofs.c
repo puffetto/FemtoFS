@@ -143,7 +143,8 @@ static int ff_lookup_vop(struct vop_cachedlookup_args *ap)
     ino_t ino;
     int error;
     *ap->a_vpp = NULL;
-    if (cn->cn_nameiop != LOOKUP && (cn->cn_flags & ISLASTCN)) return EROFS;
+    if ((cn->cn_nameiop == DELETE || cn->cn_nameiop == RENAME) &&
+        (cn->cn_flags & ISLASTCN)) return EROFS;
     if (cn->cn_namelen == 1 && cn->cn_nameptr[0] == '.') {
         vref(vp); *ap->a_vpp = vp; return 0;
     }
@@ -152,6 +153,8 @@ static int ff_lookup_vop(struct vop_cachedlookup_args *ap)
         return vn_vget_ino_gen(vp, ff_parent, &ino, cn->cn_lkflags, ap->a_vpp);
     }
     error = ff_lookup(im, FN(vp)->id, cn->cn_nameptr, cn->cn_namelen, &id);
+    if (error == ENOENT && cn->cn_nameiop == CREATE &&
+        (cn->cn_flags & ISLASTCN)) return EROFS;
     if (!error) error = ff_vget(vp->v_mount, inode(im, id), cn->cn_lkflags, ap->a_vpp);
     if ((cn->cn_flags & MAKEENTRY) && (error == 0 || error == ENOENT)) cache_enter(vp, *ap->a_vpp, cn);
     return error;

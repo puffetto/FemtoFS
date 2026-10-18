@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <assert.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +24,12 @@ int main(int argc, char **argv)
     unsigned count = 0, repeat = 0, dots = 0;
     assert(argc == 2 && (dir = opendir(argv[1])) != NULL);
     assert(!stat(argv[1], &root));
+    /* CREATE lookup must resolve existing names before rejecting new writes. */
+    snprintf(path, sizeof(path), "%s/hidden", argv[1]);
+    assert(mkdir(path, 0755) == -1 && errno == EEXIST);
+    snprintf(path, sizeof(path), "%s/new-directory", argv[1]);
+    assert(mkdir(path, 0755) == -1 && errno == EROFS);
+    assert(mkdir(path, 0755) == -1 && errno == EROFS);
 #ifdef __FreeBSD__
     struct statfs fs;
     assert(!statfs(argv[1], &fs) && fs.f_namemax == 255);
