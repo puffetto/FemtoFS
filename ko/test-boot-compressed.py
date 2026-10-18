@@ -40,7 +40,7 @@ for name in ('bin', 'sbin', 'lib', 'libexec', 'usr/bin', 'usr/sbin', 'usr/libexe
 (root/'usr/lib').mkdir(exist_ok=True)
 for path in Path('/usr/lib').glob('*.so*'):
     shutil.copy(path, root/'usr/lib'/path.name, follow_symlinks=False)
-for name in ('rc', 'rc.subr', 'rc.shutdown', 'rc.initdiskless', 'network.subr',
+for name in ('rc', 'rc.subr', 'rc.shutdown', 'rc.initdiskless', 'network.subr', 'pccard_ether',
              'login.conf', 'login.access', 'gettytab', 'protocols', 'services',
              'netconfig', 'nsswitch.conf', 'devd.conf', 'newsyslog.conf'):
     shutil.copy('/etc/' + name, root/'etc'/name)
@@ -123,6 +123,10 @@ probes = ('bin/sh', 'sbin/init', 'etc/rc', 'usr/bin/su', 'usr/sbin/sshd')
 # The boot disk has only the compressed image. All userspace comes from FemtoFS.
 (stage/'boot/kernel').mkdir(parents=True)
 (stage/'boot/loader.conf.d').mkdir()
+(stage/'etc').mkdir()
+shutil.copy(root/'etc/hostid', stage/'etc/hostid')
+(stage/'boot/entropy').write_bytes(os.urandom(4096))
+(stage/'boot/entropy').chmod(0o600)
 for name in ('loader', 'loader_lua', 'lua', 'defaults'):
     source = Path('/boot')/name
     if source.is_dir():
@@ -172,10 +176,12 @@ output = (work/'console.log').read_text(errors='replace')
 assert result.returncode == 0, work/'console.log'
 assert 'FEMTOFS_COMPRESSED ALL TESTS PASSED' in output, work/'console.log'
 assert 'FEMTOFS_COMPRESSED GUEST_STATUS=0' in output
+assert 'All buffers synced.' in output and 'Powering system off' in output
 assert re.search(r'femtofs: preload root </boot/bootme\.0fs> ' + str(image_size) + r' bytes', output)
 assert re.search(r'femtofs: bank root preload ' + str(image_size) + r' bytes', output)
 assert f'FEMTOFS_COMPRESSED loader_bytes={image_size} imported_bytes=0' in output
-for failure in ('panic:', 'lock order reversal:', 'startup aborted', 'Traceback'):
+for failure in ('panic:', 'lock order reversal:', 'startup aborted', 'Traceback',
+                '/etc/rc: ERROR:', '/etc/rc: WARNING:', ': not found', "can't find '"):
     assert failure not in output, failure
 print(f'PASS: gzip loader, FemtoFS root, stock rc, login, SSH, su, services, shutdown; {work}/console.log')
 # END File: ko/test-boot-compressed.py
