@@ -28,19 +28,21 @@ work.mkdir()
 root, stage, build = (work / name for name in ('root', 'stage', 'module'))
 for directory in (root, stage, build):
     directory.mkdir()
+os.chown(root, 0, 0)
 
 # Use stock installed binaries and rc scripts, not a rescue shell/custom rc.
 # Copy only generic configuration: never host accounts, keys or local rc.conf.
 for name in ('bin', 'sbin', 'lib', 'libexec', 'usr/bin', 'usr/sbin', 'usr/libexec',
              'usr/share/misc', 'usr/share/locale', 'usr/share/zoneinfo',
-             'etc/defaults', 'etc/rc.d', 'etc/pam.d', 'etc/mtree'):
+             'etc/defaults', 'etc/rc.d', 'etc/pam.d', 'etc/mtree',
+             'etc/devd', 'etc/newsyslog.conf.d'):
     shutil.copytree('/' + name, root/name, symlinks=True, copy_function=shutil.copy)
 (root/'usr/lib').mkdir(exist_ok=True)
 for path in Path('/usr/lib').glob('*.so*'):
     shutil.copy(path, root/'usr/lib'/path.name, follow_symlinks=False)
 for name in ('rc', 'rc.subr', 'rc.shutdown', 'rc.initdiskless', 'network.subr',
              'login.conf', 'login.access', 'gettytab', 'protocols', 'services',
-             'netconfig', 'nsswitch.conf'):
+             'netconfig', 'nsswitch.conf', 'devd.conf', 'newsyslog.conf'):
     shutil.copy('/etc/' + name, root/'etc'/name)
 for name in ('group', 'master.passwd', 'shells'):
     shutil.copy(src/'etc'/name, root/'etc'/name)
@@ -57,6 +59,7 @@ run('make', '-C', repo/'ko', f'SYSDIR={src}/sys', env=env)
 for name in ('mount_femtofs', 'femtoctl'):
     run('cc', '-Wall', '-Wextra', '-Werror', repo/f'ko/{name}.c', '-o', root/'sbin'/name)
 shutil.copy(build/'femtofs.ko', root/'boot/kernel/femtofs.ko')
+shutil.copy('/boot/kernel/kernel', root/'boot/kernel/kernel')
 
 hostid = str(uuid.uuid4())
 (root/'etc/hostid').write_text(hostid + '\n')
@@ -102,8 +105,10 @@ UsePAM yes
 ''')
 # A real getty/login starts the checks only after stock rc has returned to init.
 # Passwordless console root is strictly a disposable, network-isolated fixture.
+with (root/'etc/gettytab').open('a') as gettytab:
+    gettytab.write('\nfemtofs-test:al=root:tc=3wire.115200:\n')
 (root/'etc/ttys').write_text('console none unknown off secure\n'
-    'ttyu0 "/usr/libexec/getty -a root 3wire" vt100 on secure\n')
+    'ttyu0 "/usr/libexec/getty femtofs-test" vt100 on secure\n')
 shutil.copy(repo/'ko/test-boot-compressed-guest.sh', root/'root/check-boot.sh')
 (root/'root/.profile').write_text('''/bin/sh /root/check-boot.sh
 result=$?
@@ -117,6 +122,7 @@ probes = ('bin/sh', 'sbin/init', 'etc/rc', 'usr/bin/su', 'usr/sbin/sshd')
 
 # The boot disk has only the compressed image. All userspace comes from FemtoFS.
 (stage/'boot/kernel').mkdir(parents=True)
+(stage/'boot/loader.conf.d').mkdir()
 for name in ('loader', 'loader_lua', 'lua', 'defaults'):
     source = Path('/boot')/name
     if source.is_dir():
