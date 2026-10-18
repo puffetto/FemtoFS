@@ -247,7 +247,7 @@ struct Fixture {
         directory = path.data();
         std::filesystem::create_directory(directory / "source");
         options.input = (directory / "source").string();
-        options.output = (directory / "output.img").string();
+        options.output = (directory / "output.0fs").string();
         options.tempDir = directory.string();
         options.uuid = parseUuid("00112233-4455-6677-8899-aabbccddeeff");
         if (::lstat(options.input.c_str(), &inputStatus) != 0) std::abort();

@@ -76,7 +76,7 @@ success = False
 try:
     empty = base / 'empty'
     empty.mkdir()
-    empty_image = base / 'empty.img'
+    empty_image = base / 'empty.0fs'
     run(builder, '--temp-dir', base, empty, empty_image)
     unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(empty_image)]).decode().strip()
     assert unit.startswith('md') and unit[2:].isdigit()

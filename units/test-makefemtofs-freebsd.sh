@@ -34,8 +34,8 @@ printf 'private payload\n' > "$case_dir/source/private"
 chmod 0600 "$case_dir/source/private"
 uuid=00112233-4455-6677-8899-aabbccddeeff
 "$builder" --temp-dir "$case_dir" --uuid "$uuid" \
-    "$case_dir/source" "$case_dir/reference.img"
-image_size=$(wc -c < "$case_dir/reference.img" | tr -d ' ')
+    "$case_dir/source" "$case_dir/reference.0fs"
+image_size=$(wc -c < "$case_dir/reference.0fs" | tr -d ' ')
 image_pages=$((image_size / 4096))
 uname -a
 getconf PAGESIZE
@@ -74,13 +74,13 @@ PY
         else
             "$builder" --device --temp-dir "$case_dir" --uuid "$uuid" \
                 "$case_dir/source" "/dev/$unit"
-            dd if="/dev/$unit" of="$case_dir/readback.img" bs=4096 \
+            dd if="/dev/$unit" of="$case_dir/readback.0fs" bs=4096 \
                 count="$image_pages" 2> "$case_dir/dd.log"
-            cmp "$case_dir/reference.img" "$case_dir/readback.img"
+            cmp "$case_dir/reference.0fs" "$case_dir/readback.0fs"
         fi
         mdconfig -d -u "$unit"
         unit=
-        python3 - "$case_dir/backing" "$case_dir/reference.img" "$capacity" "$sector" <<'PY'
+        python3 - "$case_dir/backing" "$case_dir/reference.0fs" "$capacity" "$sector" <<'PY'
 from pathlib import Path
 import sys
 backing = Path(sys.argv[1]).read_bytes()

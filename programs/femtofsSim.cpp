@@ -1,6 +1,6 @@
 // File: programs/femtofsSim.cpp
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Estimate femtoFS 0x0100 metadata, hashing, packing, and mmap behavior.
+// Estimate FemtoFS 0x0100 metadata, hashing, packing, and mmap behavior.
 
 #include <algorithm>
 #include <array>
@@ -1450,7 +1450,7 @@ int main(int argc, char** argv) {
         duplicateFifoAttrMismatch != 0 ||
         symlinkHardlinkViolatingPaths != 0 ||
         fifoHardlinkViolatingPaths != 0) {
-        std::cerr << "Input violates femtoFS source-tree mapping policy:\n";
+        std::cerr << "Input violates FemtoFS source-tree mapping policy:\n";
         if (parseErrors != 0)
             std::cerr << "  unparsed input records: " << parseErrors << "\n";
         if (rootDirectoryCount != 1) {
@@ -1772,7 +1772,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "\n";
 
-    std::cout << "femtoFS object model estimate\n";
+    std::cout << "FemtoFS object model estimate\n";
     std::cout << "  file objects (unique inodes): " << fileObjectCount << "\n";
     std::cout << "  hardlink objects:             " << hardlinkObjectCount << "\n";
     std::cout << "  dir objects (non-root):       " << dirObjectCount << "\n";

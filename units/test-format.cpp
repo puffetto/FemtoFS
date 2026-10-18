@@ -1,6 +1,6 @@
 // File: units/test-format.cpp
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Verify the shared femtoFS on-disk layout and primitive encodings.
+// Verify the shared FemtoFS on-disk layout and primitive encodings.
 
 #include <catch2/catch_test_macros.hpp>
 

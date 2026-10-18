@@ -53,7 +53,7 @@ class Images(unittest.TestCase):
         os.mkfifo(src / 'fifo', 0o644)
         for name in Path('units/dual-hash-names.txt').read_text().splitlines():
             (src / name).write_bytes(b'deduplicated')
-        image = cls.base / 'valid.img'
+        image = cls.base / 'valid.0fs'
         subprocess.run([BUILDER, '--temp-dir', str(cls.base), str(src), str(image)], check=True, capture_output=True)
         cls.good = image.read_bytes()
         cls.root = 128 + 16 * u32(cls.good, 52)
@@ -76,7 +76,7 @@ class Images(unittest.TestCase):
         b = bytearray(b)
         if checksum and len(b) >= 128:
             rehash(b)
-        p = self.base / 'candidate.img'
+        p = self.base / 'candidate.0fs'
         p.write_bytes(b)
         result = subprocess.run([CHECK, str(p)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0 if valid else 1, result.stdout + result.stderr)
@@ -87,7 +87,7 @@ class Images(unittest.TestCase):
     def test_empty_root(self):
         directory = self.base / 'empty-root'
         directory.mkdir()
-        output = self.base / 'empty.img'
+        output = self.base / 'empty.0fs'
         subprocess.run([BUILDER, '--temp-dir', str(self.base), str(directory), str(output)],
                        check=True, capture_output=True)
         self.check(output.read_bytes(), valid=True)
@@ -162,7 +162,7 @@ class Images(unittest.TestCase):
 
     def test_deterministic_mutations_do_not_crash(self):
         rng = random.Random(20261014)
-        p = self.base / 'mutation.img'
+        p = self.base / 'mutation.0fs'
         for _ in range(250):
             b = bytearray(self.good)
             for _ in range(rng.randrange(1, 5)):

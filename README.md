@@ -193,7 +193,7 @@ Modeled directory lookup cost for newly accessed paths:
   for repeated lookups. The counts above do not establish wall-clock performance
   or general superiority for either filesystem.
 
-`mmap()` page-path estimate (UFS-on-md vs `FemtoFS`-on-md, `clean` mode):
+`mmap()` page-path estimate (UFS vs a resident `FemtoFS` bank, `clean` mode):
 - Selection rule used for estimate: non-symlink files ending in `.so`, plus
   regular files in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`, `/usr/local/bin`,
   `/usr/local/sbin`
@@ -205,7 +205,7 @@ Modeled directory lookup cost for newly accessed paths:
   representable from the image. The remaining **803 / 18,628 pages**
   (**4.31%**) use a clean copied-page path: 29 whole small-file pages and 774
   partial tail pages.
-- A simple UFS-on-md first-touch comparison counts up to all **18,628** logical
+- A simple UFS first-touch comparison counts up to all **18,628** logical
   pages as newly materialized. Cache state and pager behavior can reduce the
   actual work.
 - No kernel implementation was exercised for these figures. "Directly
@@ -225,14 +225,14 @@ output checks, boundary cases, and deterministic publication/device-commit
 fault injection, and passes on macOS and FreeBSD 15.1, including ASan/UBSan runs.
 
 The [kernel module](ko/README.md) targets FreeBSD 15.1 with `clean` and `leaking`
-mappings. The resident-bank implementation replaces the historical md hooks:
-bootloader images are adopted without copying; `femtoctl add` copies files or
-devices into named RAM banks. Mount by label, unmount to retain, and explicitly
-discard unused banks. No md/GEOM/kernel patches or direct device mounts are part
-of this design. Mounting banks requires root. Private writable mappings use COW;
-shared mappings remain read-only. Stock FreeBSD 15.1 dynamic-shell root and
-UFS-control verification passes; commands and coverage limits are described in
-the [module documentation](ko/README.md). Asynchronous imports remain deferred.
+mappings. Images live in resident banks: bootloader images are adopted without
+copying; `femtoctl add` copies files or devices into named RAM banks. Mount by
+label, unmount to retain, and explicitly discard unused banks. No kernel patches
+or direct device mounts are part of this design. Mounting banks requires root.
+Private writable mappings use COW; shared mappings remain read-only. Stock
+FreeBSD 15.1 dynamic-shell root and UFS-control verification passes; commands
+and coverage limits are described in the [module documentation](ko/README.md).
+Asynchronous imports remain deferred.
 
 Image construction is offline work. Its efficiency matters, but deterministic
 output, safe publication, mounted lookup performance, and final image size have
@@ -264,8 +264,8 @@ bsdmake -C programs
 Create an image from a directory or archive:
 
 ```sh
-build/makefemtofs input-directory output.img
-build/makefemtofs input.tar.zst output.img
+build/makefemtofs input-directory output.0fs
+build/makefemtofs input.tar.zst output.0fs
 ```
 
 Raw mtree/METALOG input is rejected because it does not reliably carry regular-

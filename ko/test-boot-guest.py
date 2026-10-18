@@ -32,7 +32,7 @@ def refuse(*args):
 
 
 assert Path('/identity').read_text() == 'FemtoFS root\n'
-raw = Path('/runtime/boot/data.img').read_bytes()
+raw = Path('/runtime/boot/data.0fs').read_bytes()
 u32 = lambda off: struct.unpack_from('<I', raw, off)[0]
 files = {}
 for i in range(u32(56)):
@@ -48,7 +48,7 @@ for i in range(u32(56)):
 
 # Select a physically and virtually 2 MiB-aligned window in loader memory.
 metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
-record = metadata.split('value:\t/boot/data.img', 1)[1]
+record = metadata.split('value:\t/boot/data.0fs', 1)[1]
 address = int(re.search(r'MODINFO_ADDR.*?value:\s*(0x[0-9a-f]+)', record, re.S)[1], 16)
 large_offset = (-(address + files['file-4194304'][0])) % (2 * 1024 * 1024)
 
@@ -63,11 +63,11 @@ if Path('/etc/guest-mode').read_text() == 'audit':
     print('FEMTOFS_BOOT ALL TESTS PASSED', flush=True)
     sys.exit(0)
 
-root_size = len(Path('/runtime/boot/root.img').read_bytes())
-data_size = len(Path('/runtime/boot/data.img').read_bytes())
+root_size = len(Path('/runtime/boot/root.0fs').read_bytes())
+data_size = len(Path('/runtime/boot/data.0fs').read_bytes())
 loader_total = root_size + data_size
 assert counter('loader_bytes') == loader_total and counter('imported_bytes') == 0
-data_image_size = struct.unpack_from('<I', Path('/runtime/boot/data.img').read_bytes(), 32)[0]
+data_image_size = struct.unpack_from('<I', Path('/runtime/boot/data.0fs').read_bytes(), 32)[0]
 assert data_size == data_image_size + 8192
 assert counter('loader_image_bytes') == root_size + data_image_size
 for old in ('borrowed_bytes', 'snapshot_bytes', 'borrowed_faults', 'released_pages'):
@@ -81,13 +81,13 @@ run(ctl, 'list')
 refuse('kldunload', 'femtofs')
 refuse('/mount_femtofs', '/dev/md0', mount)
 refuse('/mount_femtofs', 'missing', mount)
-refuse(ctl, 'add', 'async', 'future', '/runtime/boot/data.img')
-refuse(ctl, 'add', 'data', '/runtime/boot/data.img')
+refuse(ctl, 'add', 'async', 'future', '/runtime/boot/data.0fs')
+refuse(ctl, 'add', 'data', '/runtime/boot/data.0fs')
 for name in ('bad-header', 'bad-metadata'):
     refuse('/mount_femtofs', name, mount)
-    refuse(ctl, 'add', 'invalid', '/runtime/boot/'+name+'.img')
+    refuse(ctl, 'add', 'invalid', '/runtime/boot/'+name+'.0fs')
 assert counter('loader_bytes') == loader_total and counter('imported_bytes') == 0
-raw = Path('/runtime/boot/data.img').read_bytes()[:data_image_size]
+raw = Path('/runtime/boot/data.0fs').read_bytes()[:data_image_size]
 # Even with usermount enabled, only an administrator may claim loader memory.
 user_mount = Path('/tmp/user-mount'); user_mount.mkdir()
 os.chown(user_mount, 65534, 65534)
@@ -210,13 +210,13 @@ run('umount', mount)
 
 # File import disconnects from the source; remount retains the owned allocation.
 for content in (b'', raw[:64], raw[:-4096]):
-    Path('/tmp/short.img').write_bytes(content)
-    refuse(ctl, 'add', 'short', '/tmp/short.img')
+    Path('/tmp/short.0fs').write_bytes(content)
+    refuse(ctl, 'add', 'short', '/tmp/short.0fs')
     assert counter('imported_bytes') == 0
-Path('/tmp/short.img').unlink()
-Path('/tmp/backing.img').write_bytes(raw)
-run(ctl, 'add', 'copy', '/tmp/backing.img')
-Path('/tmp/backing.img').unlink()
+Path('/tmp/short.0fs').unlink()
+Path('/tmp/backing.0fs').write_bytes(raw)
+run(ctl, 'add', 'copy', '/tmp/backing.0fs')
+Path('/tmp/backing.0fs').unlink()
 assert counter('imported_bytes') == len(raw)
 for _ in range(2):
     run('/mount_femtofs', 'copy', mount)
@@ -231,13 +231,13 @@ assert counter('imported_bytes') == 0
 # Competing publications have one winner and no losing allocation leak.
 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
     results = list(pool.map(lambda _: subprocess.run(
-        [ctl, 'add', 'race', '/runtime/boot/data.img'], capture_output=True).returncode, range(2)))
+        [ctl, 'add', 'race', '/runtime/boot/data.0fs'], capture_output=True).returncode, range(2)))
 assert sorted(results) == [0, 1], results
 assert counter('imported_bytes') == len(raw)
 run(ctl, 'discard', 'race')
 # A mount/discard race can publish a claim or discard; never both.
 for _ in range(10):
-    run(ctl, 'add', 'race', '/runtime/boot/data.img')
+    run(ctl, 'add', 'race', '/runtime/boot/data.0fs')
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(subprocess.run, ['/mount_femtofs', 'race', str(mount)], capture_output=True)
         b = pool.submit(subprocess.run, [ctl, 'discard', 'race'], capture_output=True)
@@ -248,11 +248,11 @@ for _ in range(10):
         run('umount', mount)
         run(ctl, 'discard', 'race')
 assert counter('imported_bytes') == 0
-run('/test-bank', '/runtime/boot/data.img')
+run('/test-bank', '/runtime/boot/data.0fs')
 # Listing during mutation must return a coherent snapshot or an explicit retry error.
 def mutate():
     for _ in range(20):
-        run(ctl, 'add', 'listing', '/runtime/boot/data.img')
+        run(ctl, 'add', 'listing', '/runtime/boot/data.0fs')
         run(ctl, 'discard', 'listing')
 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
     mutation = pool.submit(mutate)
@@ -278,10 +278,10 @@ print(f'FEMTOFS_BOOT loader discard reclaimed {managed_after - managed_before} p
 assert counter('loader_bytes') == root_size
 assert counter('loader_image_bytes') == root_size
 metadata = subprocess.check_output(['sysctl', '-n', 'debug.dump_modinfo']).decode()
-assert '/boot/data.img' not in metadata
+assert '/boot/data.0fs' not in metadata
 refuse('/mount_femtofs', 'data', mount)
 # A discarded label can be reused, now with imported storage.
-run(ctl, 'add', 'data', '/runtime/boot/data.img')
+run(ctl, 'add', 'data', '/runtime/boot/data.0fs')
 run('/mount_femtofs', 'data', mount)
 assert (mount/'identity').read_text() == 'FemtoFS data\n'
 run('umount', mount)

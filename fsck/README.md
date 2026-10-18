@@ -4,7 +4,7 @@ I promised that FemtoFS does not have any fsck and wel... it actually does have 
 
 This directory contains AI generated code to *test* FemtoFS, nothing here is intended to be used in production or to be exposed to end users.
 
-The LLM working on this directory does *NOT* have access to the code and who develops FemtoFS (along with supporting agents) should NOT look at this directory.
+The LLM working on this directory does *NOT* have access to the code and who develops FemtoFS (along with supporting agents) should NOT look at this directory besides using it as a "Black Box" for testing.
 
 The actual code is responsible for producing images conforming to the specification and to implement the kernel module to mount it (both including internal unit tests).
 

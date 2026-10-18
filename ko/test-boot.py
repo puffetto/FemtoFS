@@ -147,15 +147,15 @@ os.link(data/'file-4097', data/'hardlink')
 os.mkfifo(data/'fifo', 0o644)
 for tree, name in ((root, 'root'), (data, 'data')):
     run(builder, '--root-uid', '0', '--root-gid', '0', '--temp-dir', work,
-        tree, stage/f'boot/{name}.img')
+        tree, stage/f'boot/{name}.0fs')
 # The loader retains the whole record, while imports retain only logical bytes.
-with (stage/'boot/data.img').open('ab') as padded:
+with (stage/'boot/data.0fs').open('ab') as padded:
     padded.write(bytes(8192))
-raw = bytearray((stage/'boot/data.img').read_bytes())
+raw = bytearray((stage/'boot/data.0fs').read_bytes())
 raw[0] ^= 128
-(stage/'boot/bad-header.img').write_bytes(raw)
+(stage/'boot/bad-header.0fs').write_bytes(raw)
 raw[0] ^= 128; raw[12] ^= 128
-(stage/'boot/bad-metadata.img').write_bytes(raw)
+(stage/'boot/bad-metadata.0fs').write_bytes(raw)
 # Use explicit labels; reverse loading order in a separate acceptance boot.
 (stage/'boot/lua/loader.lua').chmod(0o644)
 commands = ['set console=comconsole', 'set comconsole_speed=115200',
@@ -165,8 +165,8 @@ order = ['root', 'data', 'bad-header', 'bad-metadata']
 if mode == 'reverse':
     order.reverse()
 for name in order:
-    commands += [f'load -t femtofs_image /boot/{name}.img',
-                 f'set femtofs.bank.{name}=/boot/{name}.img']
+    commands += [f'load -t femtofs_image /boot/{name}.0fs',
+                 f'set femtofs.bank.{name}=/boot/{name}.0fs']
 commands += ['lsmod', 'set vfs.root.mountfrom=' +
              ('ufs:/dev/ada0p2' if mode in ('control', 'audit') else 'femtofs:'),
              'set vfs.root.mountfrom.options=ro,clean,bank=root' if mode not in ('control', 'audit')
@@ -205,7 +205,7 @@ preloads = {label: address for label, address in re.findall(
 mounted = re.findall(r'femtofs: bank (\S+) preload \d+ bytes at (0x[0-9a-f]+)', output)
 assert 'data' in preloads and 'root' in preloads
 loader_addresses = dict((name, int(address, 16)) for address, name in re.findall(
-    r'(0x[0-9a-f]+): /boot/(root|data).img \(femtofs_image,', output))
+    r'(0x[0-9a-f]+): /boot/(root|data)\.0fs \(femtofs_image,', output))
 assert all(int(address, 16) == 0xffffffff80000000 + loader_addresses[label]
            for label, address in preloads.items())
 samples = re.findall(r'femtofs: page data offset (\d+) physical (0x[0-9a-f]+)', output)

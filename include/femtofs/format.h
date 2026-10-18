@@ -1,6 +1,6 @@
 // File: include/femtofs/format.h
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Shared femtoFS version 0x0100 on-disk definitions and encoding helpers.
+// Shared FemtoFS version 0x0100 on-disk definitions and encoding helpers.
 
 #pragma once
 

@@ -7,13 +7,13 @@ The command name is `makefemtofs`.
 
 ## 1. Purpose and boundaries
 
-`makefemtofs` builds one raw femtoFS filesystem image from either:
+`makefemtofs` builds one raw FemtoFS filesystem image from either:
 
 - a directory tree, walked through libarchive's disk reader; or
 - any archive format/filter accepted by the installed libarchive.
 
 It writes the image to either a regular file or a raw device. The output is a
-femtoFS volume beginning at byte zero; it does not contain a partition table.
+FemtoFS volume beginning at byte zero; it does not contain a partition table.
 
 The builder must preserve the source-tree information representable by the
 format: regular files, directories, symlinks, FIFOs, regular-file
@@ -38,7 +38,7 @@ uint16_t version;    /* 0x0100 */
 uint32_t image_hash;
 uint32_t meta_hash;
 uint32_t uuid[4];
-uint32_t image_size;  /* exact femtoFS byte length, less than 2^32 */
+uint32_t image_size;  /* exact FemtoFS byte length, less than 2^32 */
 ```
 
 The builder and verifier require:
@@ -157,7 +157,7 @@ failure. More granular exit classes can be added when callers need them.
 
 ## 4. Architecture
 
-Keep source ingestion separate from femtoFS planning and byte emission:
+Keep source ingestion separate from FemtoFS planning and byte emission:
 
 ```text
 directory/archive
@@ -230,7 +230,7 @@ ImagePlan
 ```
 
 All planning arithmetic uses checked 64-bit values. Values are narrowed only
-after proving the femtoFS field limit.
+after proving the FemtoFS field limit.
 
 ## 5. Input ingestion with libarchive
 
@@ -534,7 +534,7 @@ For a device:
    4096-byte format page;
 2. write and flush a zeroed first 4096-byte page before any other device write,
    then zero the remaining image with complete page writes, keeping the target
-   unrecognizable as femtoFS during data writes;
+   unrecognizable as FemtoFS during data writes;
 3. write the image with the first 16 header bytes (`magic` through `meta_hash`)
    still zero and header bytes 16 through 127 populated, then flush;
 4. rewrite the first page with the final header as the commit record and flush
@@ -659,5 +659,5 @@ The initial implementation is complete when the same fixture built from a
 directory and from at least tar and cpio archives yields the same verified
 bytes with a fixed UUID, all representable metadata survives a mount/readback
 test, malformed input cannot produce a committed image, and a failed build
-cannot replace an existing regular output file or leave valid femtoFS magic on
+cannot replace an existing regular output file or leave valid FemtoFS magic on
 a partially written device.

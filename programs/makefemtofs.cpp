@@ -1,6 +1,6 @@
 // File: programs/makefemtofs.cpp
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Build a femtoFS image from a directory tree or libarchive input.
+// Build a FemtoFS image from a directory tree or libarchive input.
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -186,7 +186,7 @@ void printUsage(std::ostream& out)
             std::exit(0);
         }
         if (arg == "-V" || arg == "--version") {
-            std::cout << "makefemtofs 0.1 (femtoFS 0x0100)\n";
+            std::cout << "makefemtofs 0.1 (FemtoFS 0x0100)\n";
             std::exit(0);
         }
         if (arg == "-f" || arg == "--force") {

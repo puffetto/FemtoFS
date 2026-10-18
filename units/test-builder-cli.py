@@ -39,7 +39,7 @@ class BuilderCLI(unittest.TestCase):
 
     def build(self, source, *args, output=None, error=None):
         self.serial += 1
-        output = output or self.root / f'{self.serial}.img'
+        output = output or self.root / f'{self.serial}.0fs'
         result = subprocess.run([BUILDER, '--temp-dir', str(self.root), '--uuid', UUID,
                                  *args, str(source), str(output)], capture_output=True, text=True)
         if error:
@@ -366,7 +366,7 @@ class BuilderCLI(unittest.TestCase):
 
     def test_publication_and_aliases(self):
         source = self.archive([('a', 'file', b'payload')])
-        destination = self.root / 'existing.img'
+        destination = self.root / 'existing.0fs'
         destination.write_bytes(b'previous bytes')
         self.build(source, output=destination, error='output exists')
         self.assertEqual(destination.read_bytes(), b'previous bytes')
@@ -381,7 +381,7 @@ class BuilderCLI(unittest.TestCase):
             self.assertTrue(link.is_symlink())
         directory = self.root / 'tree'
         directory.mkdir()
-        self.build(directory, output=directory / 'inside.img', error='inside')
+        self.build(directory, output=directory / 'inside.0fs', error='inside')
         self.build(source, '--device', error='existing block or character device')
 
     def test_visibility_and_page_edges(self):

@@ -1,4 +1,4 @@
-# femtoFS: zero-fsck-giving, zero-frills, read-only, near-zero-copy filesystem image format
+# FemtoFS: zero-fsck-giving, zero-frills, read-only, near-zero-copy filesystem image format
 
 This document defines a compact, memory-friendly filesystem image format.
 
@@ -7,7 +7,7 @@ This document defines a compact, memory-friendly filesystem image format.
 The aim is to provide a filesystem image format optimal for booting a "firmware-like"
 FreeBSD system in a highly resource-constrained environment.
 
-femtoFS is designed for:
+FemtoFS is designed for:
 - The currently verified FreeBSD 15.1 amd64 kernel module. The format retains
   portability hooks, but 14.x and arm64 ports are deferred.
 - Read-only mounts.
@@ -37,25 +37,29 @@ Hard limits:
   bank; this is a format for trimmed appliance images, not a full base-system
   installation.
 
-Near-zero-copy `mmap(2)` is exposed through three mount modes:
-- `dirty`: superset of `leaking` for small public files. For files in the
-  public part referenced by a public-eligible canonical regular-file inode with
-  `size < PAGE_SIZE`, the implementation accepts offsets not aligned to
-  `VM_PAGE_SIZE` and uses shifted mappings to preserve zero-copy behavior.
-  The returned logical address has the same within-page displacement as the
-  first mapped source byte, so it may not be VM-page-aligned. No leading or
-  trailing bytes in the mapped public pages are cleaned or copied.
-  For non-public-eligible regular-file inodes and for all files with
-  `size >= PAGE_SIZE`, `dirty` keeps the `leaking` alignment contract.
-- `leaking`: VM-page-aligned mappings only. Preserves zero-copy behavior for
-  suitably aligned public-part files whose size is at least `VM_PAGE_SIZE` and
-  may expose neighboring bytes outside the requested range, again only from
-  the public part.
-- `clean` (default): POSIX-style behavior. Returned mappings are VM-page-aligned
-  and bytes outside file bounds are zero-filled. A file whose size is at most
-  `VM_PAGE_SIZE` requires at most one copied kernel VM page. A larger file also
-  requires at most one copied tail page when its image data is VM-page-aligned;
-  otherwise additional copied pages may be required.
+Public and private content:
+- Mapping image pages directly into a process maps whole VM pages, so the
+  process can also see whatever else is packed into those pages: the tail of
+  a neighboring file, or a filename.
+- *Public content* is content that any local user could read anyway: payloads
+  of world-readable files reachable through world-searchable directories, and
+  filenames whose directories are world-readable and world-searchable all the
+  way from the root. Exposing it as a page neighbor reveals nothing new. The
+  exact rules are in **Visibility Classification**.
+- The builder therefore stores public content in a separate *public part* of
+  the image and everything else in a *private part*. A mapping may expose
+  neighboring bytes only from the public part; private bytes are never exposed
+  beyond their own file. The split is an access-control boundary, not a
+  performance hint.
+
+Near-zero-copy `mmap(2)` is exposed through three mount modes, specified in
+**`mmap(2)` Contract by Mount Mode**:
+- `clean` (default): POSIX-style. Bytes outside the file are zero-filled; in
+  the common case only a partial tail page is copied.
+- `leaking`: page-aligned mappings that may expose neighboring public-part
+  bytes instead of copying a tail page.
+- `dirty`: `leaking` plus shifted, unaligned zero-copy mappings of small public
+  files.
 
 Security note:
 - In this version, public/private classification is defined only by classic
@@ -77,7 +81,7 @@ integers are fixed-width:
 - `uint32_t`
 
 Never use native-width types (`int`, `long`, `size_t`, `off_t`) in on-disk
-records.
+records. Records have no inter-record padding.
 
 C implementations must enforce layout with compile-time checks:
 
@@ -95,7 +99,9 @@ _Static_assert(sizeof(struct femtofs_metaext) == 16, "femtofs_metaext size");
 
 ## Format Overview
 
-The image is a single contiguous blob with three regions, in order:
+A file holding a FemtoFS image conventionally uses the suffix `.0fs`, after the
+`0FS` magic. The image is a single contiguous blob with three regions, in
+order:
 
 1. Header (fixed, 128 bytes).
 2. Metadata table (fixed cells, 16 bytes each).
@@ -105,9 +111,12 @@ The image is a single contiguous blob with three regions, in order:
 
 All 32-bit byte offsets defined by version `0x0100` are relative to the start of
 the image, including `public_off`, `private_off`, object `data_off` when used as
-a byte offset, and bucket filename offsets. `ext_off` is a reserved field that
-must be zero in this version; a future revision must define the offset rules
-for it and any extension-record offsets it introduces.
+a byte offset, and bucket filename offsets. A content pointer `off` is valid
+only if `public_off <= off < image_size`; it is public if `off < private_off`
+and private otherwise, so `private_off` is the only boundary needed to classify
+it. `ext_off` is a reserved field that must be zero in this version; a future
+revision must define the offset rules for it and any extension-record offsets
+it introduces (see **Metadata Extension Hook**).
 
 Metadata-table locations and quantities are expressed in cells, not bytes.
 `cell_count`, `root_size`, `root_real`, directory `size`, and directory packed
@@ -137,7 +146,7 @@ struct femtofs_header {
     uint32_t meta_hash;      // FNV-1 32-bit hash over metadata table
 
     uint32_t uuid[4];        // random image UUID (128-bit)
-    uint32_t image_size;     // exact femtoFS byte length, less than 2^32
+    uint32_t image_size;     // exact FemtoFS byte length, less than 2^32
 
     uint32_t cell_count;     // number of entries in metadata table
     uint32_t public_off;     // content-region start (public part, page-aligned)
@@ -157,26 +166,16 @@ struct femtofs_header {
 ```
 
 Notes:
-- Header starts at byte 0.
-- Metadata table starts at byte 128.
-- Content region starts at `public_off`.
-- Public part is `[public_off, private_off)`.
-- Private part is `[private_off, image_size)`.
-- `private_off >= public_off`.
-- `public_off >= 128 + meta_size`.
-- `private_off` is the only boundary needed to classify any content pointer:
-  `off < private_off` is public, `off >= private_off` is private.
-- `meta_hash` is a non-cryptographic metadata-table integrity/sanity check.
-- `image_hash` is a non-cryptographic image-data integrity/sanity check.
-- `uuid` is a random per-image 128-bit identifier.
-- Root descriptor is in header because root has no parent bucket entry.
-- `root_p` uses the same hash-control encoding as directory `hash_p` fields.
+- The root descriptor is in the header because the root has no parent bucket
+  entry. `root_p` uses the same encoding as directory `hash_p` fields.
 - `hash2_base` is used only when at least one directory (including root) is in
-  dual-hash mode; otherwise it must be `0`.
+  dual-hash mode; otherwise it must be `0` (see **Directory Hash-Control
+  Encoding**).
 - `author` is the fixed 56-byte format-author identifier shown in the structure
   declaration: its 49 ASCII bytes occupy `author[0..48]`, `author[49]` is the
   terminating NUL, and `author[50..55]` are zero.
-- Attribute cells may appear anywhere in the metadata table.
+- Bounds and alignment of the header fields are listed in **Normative
+  Validation Rules**.
 
 The two single-byte `format` fields can be read before interpreting any
 multi-byte field:
@@ -199,8 +198,8 @@ size mismatch is handled as specified below, and architecture names do not
 otherwise affect the on-disk format. A kernel or other consumer must reject an
 unsupported format field.
 
-Future format definitions may assign additional byte-order and page-size
-values. Power-of-two page sizes from 256 bytes upward preserve the alignment of
+Note (non-normative): future format definitions may assign additional
+byte-order and page-size values. Power-of-two page sizes from 256 bytes upward preserve the alignment of
 the 128-byte header and 16-byte metadata cells, although all existing offset,
 image-size, and checked-arithmetic constraints still apply. Reserving a value
 does not make it valid for version `0x0100`.
@@ -273,50 +272,25 @@ canonical-byte checks that require a complete map of extension-owned bytes.
 Unknown extensions do not relax structural validation of the version fields
 and records the consumer does understand.
 
-### Metadata Integrity Hash (`meta_hash`)
+### Integrity Hashes (`meta_hash`, `image_hash`)
 
-`meta_hash` is deterministic and algorithm-fixed:
-- Hash function: FreeBSD kernel `fnv_32_buf()` from `<sys/fnv_hash.h>`
-  (FNV-1, 32-bit state).
-- Initial value: `FNV1_32_INIT`.
-- Input bytes: exact metadata-table byte range
-  `image[128 .. 128 + meta_size)`.
-- Header bytes (including `meta_hash`) are not part of the hash input.
-- No salt/nonce/secret key is used.
+Both hashes are deterministic, algorithm-fixed, non-cryptographic integrity
+checks. Both use FreeBSD kernel `fnv_32_buf()` from `<sys/fnv_hash.h>` (FNV-1,
+32-bit state) with initial value `FNV1_32_INIT`, and no salt, nonce or secret
+key.
 
-Builder rule:
-- After finalizing all metadata-table bytes, compute:
-  `meta_hash = fnv_32_buf(meta_bytes, meta_size, FNV1_32_INIT)`.
+| Hash | Input bytes | Builder computes | Reader |
+|---|---|---|---|
+| `meta_hash` | the metadata table, `image[128 .. 128 + meta_size)` | `fnv_32_buf(image + 128, meta_size, FNV1_32_INIT)` | SHOULD verify before trusting metadata-table contents |
+| `image_hash` | `image[16 .. image_size)`, i.e. from `offsetof(struct femtofs_header, uuid)` to the end of the image | `fnv_32_buf(image + 16, image_size - 16, FNV1_32_INIT)` | MAY verify at mount/open time |
 
-Reader rule:
-- Before trusting metadata-table contents, implementations SHOULD recompute the
-  same hash and require exact equality with header `meta_hash`; mismatch means
-  corrupt/invalid image.
-
-### Image Integrity Hash (`image_hash`)
-
-`image_hash` is algorithm-fixed:
-- Hash function: FreeBSD kernel `fnv_32_buf()` from `<sys/fnv_hash.h>`
-  (FNV-1, 32-bit state).
-- Initial value: `FNV1_32_INIT`.
-- Input bytes: exact byte range from `uuid` (inclusive) to the
-  end of image (`image_size`), i.e. in this layout:
-  `image[offsetof(struct femtofs_header, uuid) .. image_size)`.
-- The input includes `uuid[]`, `image_size`, the remainder of the header,
-  metadata table, alignment padding, and both content parts.
-- The 16-byte prefix containing `magic`, `format`, `version`, `image_hash`, and
-  `meta_hash` is not part of the hash input.
-- No secret key is used. The UUID is ordinary hashed image data.
-- `meta_hash` and `image_hash` do not include each other's stored value and may
-  be computed independently after their respective input bytes are finalized.
-
-Builder rule:
-- After finalizing all bytes from `uuid` through the end of image,
-  compute:
-  `image_hash = fnv_32_buf(image + offsetof(struct femtofs_header, uuid), image_size - offsetof(struct femtofs_header, uuid), FNV1_32_INIT)`.
-
-Reader rule:
-- Implementations MAY verify `image_hash` at mount/open time.
+- `image_hash` covers `uuid[]`, `image_size`, the remainder of the header, the
+  metadata table, alignment padding and both content parts. The UUID is
+  ordinary hashed image data.
+- Neither hash covers the 16-byte prefix (`magic`, `format`, `version`,
+  `image_hash`, `meta_hash`), so neither includes the other's stored value.
+  Each is computed after its own input bytes are final.
+- A mismatch on a verified hash means a corrupt, invalid image.
 
 ### Image Fingerprint and Same-Image Identity
 
@@ -331,15 +305,6 @@ The fingerprint is intended for fast identity comparison, not cryptographic
 authentication or image validation; FNV-1 is non-cryptographic. Readers must
 still perform the required structural and integrity checks before trusting an
 image.
-
-Offset model:
-- Every on-disk 32-bit pointer to content bytes is image-relative.
-- `private_off` is the sole public/private classifier for those pointers.
-- Pointer validity for content bytes is:
-  `public_off <= off < image_size`.
-- A future revision that defines extension pointers must also define their
-  bounds and private-part requirements; an image whose revision is exactly
-  `0x0100` requires `ext_off == 0`.
 
 ---
 
@@ -406,91 +371,50 @@ struct femtofs_attr {
 #define FEMTOFS_TYPE_ATTR      (FEMTOFS_TYPE_AUX | 1)
 ```
 
-Object cells and attribute cells share the same 16-byte table. Their role is
-identified by the leading `type` byte. Bucket cells are represented using the
-`femtofs_object` layout with bucket semantics described below.
+Object cells, bucket cells and attribute cells share the same 16-byte table.
+Bucket cells use the `femtofs_object` layout with bucket semantics. `type`
+intentionally remains at byte 0 as the discriminator; reordering the members by
+width would change the on-disk ABI.
 
 For compact notation in the rest of this document, `data_off`, `size`, and
 `realsize` refer to `role.raw.data_off`, `role.raw.size`, and
-`role.raw.realsize`, respectively.
+`role.raw.realsize`, respectively. The valid types are `NULL`, `FILE`, `DIR`,
+`SYMLINK`, `HARDLINK`, `FIFO` and `ATTR`; other values are unassigned.
 
-`type` intentionally remains at byte 0. Reordering all members by width would
-move the discriminator, change the on-disk ABI, and invalidate the existing
-bucket/type interpretation rules.
+### Cell Roles
 
-Auxiliary cell rule:
-- Any cell whose `type` has `FEMTOFS_TYPE_AUX` set is not a directory bucket
-  occupant and must be treated as empty by hash lookup and directory iteration.
-- `FEMTOFS_TYPE_ATTR` is the only defined auxiliary cell type in this version.
-
-Cell role is contextual:
+A cell's role depends on where it sits:
 - Directory bucket slices must be pairwise disjoint.
 - Inside a directory slice, a non-null, non-auxiliary cell is an occupied
-  bucket regardless of its `type`; a `NULL` cell is an empty bucket and an
-  auxiliary cell is empty for directory purposes.
+  bucket regardless of its `type`; a `NULL` cell is an empty bucket.
+- Any cell whose `type` has `FEMTOFS_TYPE_AUX` set is auxiliary: it is never a
+  bucket occupant, and hash lookup and directory iteration treat it as empty.
+  `FEMTOFS_TYPE_ATTR` is the only auxiliary type in this version. Attribute
+  cells may appear anywhere in the table, inside or outside directory slices;
+  they are never referenced by buckets or resolved by path lookup.
 - Outside every directory slice, a non-null, non-auxiliary cell is a filesystem
   object. A filesystem object must never occupy or be targeted inside a bucket
-  slice.
-- Attribute cells may be inside or outside directory slices. `NULL` cells
-  outside directory slices are unused metadata cells.
+  slice. `NULL` cells outside directory slices are unused metadata cells.
 
-### Field-Width Utilization Map (`femtofs_object`, v1)
+### Field Use by Cell Role
 
-This subsection makes explicit where on-disk fields carry values with a smaller
-effective domain than their storage width. It is intended to show where future
-extensions could add meaning.
+| Cell | `hash_p` | `attr_index` | word 0 (`data_off`) | word 1 (`size`) | word 2 (`realsize`) |
+|---|---|---|---|---|---|
+| `DIR` | hash-control byte | attribute index | `bucket_first`: first bucket index | `bucket_count`: `tablesize`, `<= 65521` | `parent_n`: packed `{ parent_index, N }` |
+| `FILE`, `SYMLINK` | unused | attribute index | `image_off`: image-relative payload offset | `content_size`: announced byte length, excluding the stored terminator and alignment padding | `reserved_flags`: `0` |
+| `FIFO` | unused | attribute index | `0` (no payload) | `0` | `0` |
+| `HARDLINK` | unused | `0` (attributes come from the target) | `target_index`: index of the canonical `FILE` | `reserved0`: `0` | `reserved1`: `0` |
+| occupied bucket | `0` | `0` | `object_index`: target object index | `name_off`: image-relative filename offset | `next_index`: slice-relative next bucket, or `tablesize` as the end sentinel |
+| empty bucket (`NULL`) | `0` | `0` | `0` | `0` | `tablesize` |
 
-Builder hygiene:
-- Builders should write `0` in all currently unused bytes/bits.
-- Readers should only require zero where this specification already marks fields
-  as reserved and checks them in validation rules.
-
-`femtofs_object` header fields:
-- `type` (`uint8_t`): this version defines only
-  `NULL`, `FILE`, `DIR`, `SYMLINK`, `HARDLINK`, `FIFO`, `ATTR`
-  (plus `AUX` namespace bit). Other values are unassigned.
-- `hash_p` (`uint8_t`):
-  - `DIR`: hash-control byte:
-    - bits `[5:0]` encode `p1_index` into `SMALL_PRIMES`
-    - bits `[7:6]` encode hash mode (`00` single-hash, `01` dual-hash,
-      `10/11` reserved)
-  - Bucket cells: reserved and required `0`.
-  - `FILE`/`SYMLINK`/`FIFO`/`HARDLINK`: currently unused by semantics.
-- `root_p` in the header uses the same encoding as directory `hash_p`.
-- `attr_index` (`uint16_t`):
-  - `FILE`/`DIR`/`SYMLINK`/`FIFO`: attribute-cell index `< cell_count` where
-    `cell_count < 2^16`.
-  - `HARDLINK` and bucket cells: required `0`.
-
-`union femtofs_object_role` payload fields (stored as three `uint32_t` words):
-- Word 0 (`data_off` / `bucket_first` / `image_off` / `target_index` / `object_index`):
-  - `FILE`/`SYMLINK` `image_off`: image-relative byte offset (`< 2^32`), full
-    32-bit offset domain.
-  - `DIR` `bucket_first`: metadata index (`< 2^16`), logically `u16` in `u32`.
-  - `HARDLINK` `target_index`: metadata index (`< 2^16`), logically `u16` in
-    `u32`.
-  - Bucket `object_index`: metadata index (`< 2^16`), logically `u16` in `u32`.
-  - `FIFO`: required `0`.
-- Word 1 (`size` / `bucket_count` / `content_size` / `reserved0` / `name_off`):
-  - `FILE`/`SYMLINK` `content_size`: announced size (`< 2^32`), full 32-bit
-    length domain.
-  - `DIR` `bucket_count`: `tablesize`, bounded by `<= 65521`, logically `u16`
-    in `u32`.
-  - Bucket `name_off`: image-relative byte offset (`< 2^32`), full 32-bit
-    offset domain.
-  - `HARDLINK` `reserved0`: required `0`.
-  - `FIFO`: required `0`.
-- Word 2 (`realsize` / `parent_n` / `reserved_flags` / `reserved1` / `next_index`):
-  - `DIR` `parent_n`:
-    - bits `[15:0]` parent index
-    - bits `[30:16]` `N`
-    - bit `[31]` reserved (`0`)
-  - `FILE`/`SYMLINK` `reserved_flags`: required `0` in this version (entire
-    word currently unused).
-  - `HARDLINK` `reserved1`: required `0`.
-  - Bucket `next_index`: chain next index or end sentinel `tablesize`,
-    bounded by `<= 65521`, logically `u16` in `u32`.
-  - `FIFO`: required `0`.
+- Metadata indices (`bucket_first`, `target_index`, `object_index`, attribute
+  indices) are `< cell_count < 2^16`, so they are logically `u16` values carried
+  in wider fields whose upper bits are zero. `bucket_count` and `next_index`
+  are bounded by `65521`. Byte offsets and `content_size` use the full 32-bit
+  domain.
+- Builders should write `0` in every unused byte and bit. Readers should require
+  zero only where **Normative Validation Rules** checks a field; the `unused`
+  `hash_p` entries above are not checked.
 
 ### Directory Hash-Control Encoding (`hash_p`, `root_p`)
 
@@ -513,8 +437,21 @@ Interpretation:
 - `DUAL` mode: two anchor hashes (`h1`, `h2`):
   - `h1` uses `p1 = SMALL_PRIMES[p1_index]`
   - `h2` uses `hash2_base` from the image header.
-- `SMALL_PRIMES` table content and order are defined in
-  "Choosing Hash Parameters at Build Time".
+
+```c
+MAX_TABLESIZE_PRIME = 65521   // largest prime < 2^16
+SMALL_PRIMES = [
+    3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
+    53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107,
+    109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167,
+    173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
+    233, 239, 241, 251
+]                       // fixed on-disk index map for `p1_index`
+SMALL_PRIMES_COUNT = 53
+```
+
+Implementations should derive the in-memory array length where possible and
+must assert that it equals the normative `SMALL_PRIMES_COUNT`.
 
 `hash2_base` rules:
 - If any directory (including root) is in `DUAL` mode, `hash2_base` must be a
@@ -556,14 +493,8 @@ domain. Accepted candidates require divisors only below `2^12`, making the one
 mount-time check inexpensive without a sieve, table, Miller-Rabin, or wider
 arithmetic.
 
-Builder policy flexibility:
-- Builder implementations MAY choose per-directory mode (`SINGLE` vs `DUAL`)
-  and MAY classify "hard" directories using their own heuristic.
-- Builder implementations MAY test multiple candidate `hash2_base` primes in
-  the allowed range and select the best candidate.
-- Builders SHOULD choose parameters to balance lookup performance (worst-case
-  chain length and average comparisons) against metadata size (bucket count).
-- This specification does not mandate one optimizer algorithm.
+How a builder chooses modes and parameters is described in **Choosing Hash
+Parameters at Build Time**.
 
 ### Directory Metadata Packing (`realsize`)
 
@@ -620,47 +551,11 @@ Metadata rules:
 - `femtofs_attr.ext_off` must be `0` in version `0x0100`; see the reserved
   `femtofs_metaext` hook below.
 
-`FEMTOFS_TYPE_DIR`:
-- `hash_p`: hash-control byte (`p1_index` + mode, see encoding section)
-- `attr_index`: attribute cell index for this directory
-- `data_off`: first bucket index in metadata table
-- `size`: `tablesize` (bucket count)
-- `realsize`: packed `{ parent_index, N }`
-
-`FEMTOFS_TYPE_FILE` and `FEMTOFS_TYPE_SYMLINK`:
-- `attr_index`: attribute cell index for this object
-- `data_off`: image-relative byte offset into content region
-- `size`: announced byte length (original object size; excludes stored
-  terminator and alignment padding)
-- `realsize`: reserved for future filelike flags, must be `0` in this version
-- part classification is derived from header boundary:
-  - `data_off < private_off` => public part
-  - `data_off >= private_off` => private part
-
-`FEMTOFS_TYPE_FIFO`:
-- `attr_index`: attribute cell index for this object
-- `data_off`: `0` (no payload)
-- `size`: `0`
-- `realsize`: `0`
-
-`FEMTOFS_TYPE_HARDLINK`:
-- `attr_index`: `0` (ignored; attributes come from target object)
-- `data_off`: target object index (not byte offset)
-- `size`: `0`
-- `realsize`: `0`
-- `data_off` storage is `uint32_t`, but the valid domain is `< 2^16`
-  (`cell_count < 2^16`), so this is logically a `u16` index carried in
-  a `u32` field (upper bits must be zero).
-
-Hardlink constraints:
-- Target index must be `< cell_count`.
-- Target must be a non-hardlink regular file object.
-- No hardlinks to directories, symlinks, or FIFOs.
-
-`FEMTOFS_TYPE_ATTR`:
-- auxiliary metadata cells that may appear anywhere in the metadata table
-- never referenced by directory buckets directly
-- never resolved as filesystem objects through path lookup
+Per-type field use is given in **Field Use by Cell Role**. A `FILE` or
+`SYMLINK` payload is in the public or private part according to its `data_off`
+(see **Format Overview**). A `HARDLINK` `data_off` is a metadata index, not a
+byte offset: it must be `< cell_count` and name a non-hardlink regular-file
+object. Hardlinks to directories, symlinks or FIFOs are not allowed.
 
 Attribute-cell placement reference policy (builder):
 
@@ -682,43 +577,24 @@ attribute-tuple deduplication remains mandatory.
    attribute range.
 
 An unused `NULL` bucket cell inside a directory slice is an eligible placement
-target for an attribute cell. Once populated with `FEMTOFS_TYPE_ATTR`, its AUX
-bit makes it behave as an empty bucket during lookup and iteration. Directory
-chains must never link to such a cell, and it does not contribute to directory
-`N`.
+target for an attribute cell. Once populated with `FEMTOFS_TYPE_ATTR`, it is
+empty for lookup and iteration, chains must not link to it, and it does not
+contribute to directory `N`.
 
 ### Bucket Entries (Directory Hash Slice)
 
-Bucket entries are 16-byte cells using the `femtofs_object` layout in a
-directory's bucket slice.
-
-Occupied bucket:
-- `type`: referenced object type (non-null)
-- `hash_p`: reserved in bucket role, must be `0`
-- `attr_index`: `0` (unused in bucket role)
-- `data_off`: referenced object index
-- `size`: image-relative filename offset (NUL-terminated string)
-- `realsize`: next slice-relative bucket index in the chain, or `tablesize` as
-  the end sentinel
-
-The bucket `type` must exactly equal the referenced object's `type`. The target
-must be a filesystem object cell outside every directory slice; it cannot be a
-bucket, attribute, or unused cell.
-
-Despite the compact `role.raw.size` alias, bucket `size` is a byte offset, not
-a byte length. Bucket-handling code must interpret it only as `name_off`.
-Likewise, bucket `realsize` is relative to the start of its directory slice;
-it is not an absolute metadata-table index.
-
-Empty bucket:
-- `type = FEMTOFS_TYPE_NULL`
-- `hash_p = 0`, `attr_index = 0`, `data_off = 0`, and `size = 0`
-- `realsize = tablesize`
-
-Bucket interpretation rules:
-- In directory hash lookup, a cell is treated as empty if `type` is
-  `FEMTOFS_TYPE_NULL` or if `type & FEMTOFS_TYPE_AUX` is nonzero.
-- Builders must never emit chain links that target an auxiliary cell.
+Bucket entries are the cells of a directory's bucket slice; their fields are
+given in **Field Use by Cell Role**. In addition:
+- An occupied bucket's `type` must exactly equal the referenced object's
+  `type`. The target must be a filesystem object cell outside every directory
+  slice; it cannot be a bucket, attribute, or unused cell.
+- Despite the compact `role.raw.size` alias, bucket `size` is a byte offset
+  (`name_off`, a NUL-terminated filename), not a byte length.
+- Bucket `realsize` is relative to the start of its directory slice; it is not
+  an absolute metadata-table index.
+- A cell is empty for lookup if its `type` is `FEMTOFS_TYPE_NULL` or has
+  `FEMTOFS_TYPE_AUX` set. Builders must never emit chain links that target an
+  auxiliary cell.
 
 ---
 
@@ -747,13 +623,17 @@ Ownership and mode resolution:
 - root attributes come from attribute cell `root_attr`.
 - non-hardlink object attributes come from attribute cell `obj[i].attr_index`.
 - hardlink object attributes resolve through the canonical target object.
+- Attribute records are deduplicated and shared by every object with the same
+  tuple; each reference must name an `ATTR` cell.
 
-Attribute constraints:
-- `root_attr` must be `< cell_count` and refer to a `FEMTOFS_TYPE_ATTR` cell.
-- For `FEMTOFS_TYPE_FILE`, `FEMTOFS_TYPE_DIR`, `FEMTOFS_TYPE_SYMLINK`, and
-  `FEMTOFS_TYPE_FIFO`,
-  `attr_index` must be `< cell_count` and refer to a `FEMTOFS_TYPE_ATTR` cell.
-- Attribute records may be shared by multiple objects.
+Builder source-tree mapping:
+- Supported source inode kinds are regular file, directory, symlink, and FIFO.
+  Unsupported kinds (device nodes, sockets, whiteouts, etc.) must make the
+  image build fail explicitly.
+- Additional directory entries that reference the same regular-file inode are
+  encoded as `FEMTOFS_TYPE_HARDLINK`. Hardlinks to non-regular files are not
+  supported; if multiple source paths reference the same FIFO inode, the image
+  build must fail explicitly.
 
 ### Metadata Extension Hook (`femtofs_metaext`)
 
@@ -888,9 +768,8 @@ hash reachability.
 - `.`
 - `..`
 
-Then it scans occupied buckets (`type != FEMTOFS_TYPE_NULL` and
-`(type & FEMTOFS_TYPE_AUX) == 0`) in the directory slice. Listing order for
-hash buckets is undefined.
+Then it scans the occupied buckets in the directory slice (see **Cell Roles**).
+Listing order for hash buckets is undefined.
 
 ---
 
@@ -902,22 +781,8 @@ Reference objective for single-hash mode:
 - minimize `sum_of_squares(chain_lengths) / N`
 - subject to bounded `tablesize`.
 
-Definitions:
-
-```c
-MAX_TABLESIZE_PRIME = 65521   // largest prime < 2^16
-SMALL_PRIMES = [
-    3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
-    53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107,
-    109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167,
-    173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
-    233, 239, 241, 251
-]                       // fixed on-disk index map for `p1_index`
-SMALL_PRIMES_COUNT = 53
-```
-
-Implementations should derive the in-memory array length where possible and
-must assert that it equals the normative `SMALL_PRIMES_COUNT`.
+`SMALL_PRIMES` and `MAX_TABLESIZE_PRIME` are defined in **Directory
+Hash-Control Encoding**.
 
 ### Single-Hash Reference Policy
 
@@ -974,18 +839,16 @@ Notes:
 ### Mixed Single/Dual Policy (Recommended, Not Mandated)
 
 Builder implementations MAY use a mixed policy:
-- keep `SINGLE` mode for directories that already meet target lookup quality
-- switch selected "hard" directories to `DUAL` mode.
+- keep `SINGLE` mode for directories that already meet target lookup quality;
+- switch selected "hard" directories, classified by the builder's own
+  heuristic, to `DUAL` mode;
+- pick `hash2_base` as any prime in `2^8 < p < 2^24`, testing multiple
+  candidates (for example random samples) and keeping the best.
 
-For `DUAL` mode, builder implementations MAY:
-- pick `hash2_base` as any prime in `2^8 < p < 2^24`
-- test multiple candidate primes (for example random samples) and keep the best.
-
-Builders SHOULD tune these choices to balance:
-- lookup quality (worst-case chain length and average comparisons)
-- metadata growth (extra buckets / bytes).
-
-This specification intentionally does not mandate one optimizer algorithm.
+Builders SHOULD tune these choices to balance lookup quality (worst-case chain
+length and average comparisons) against metadata growth (extra buckets and
+bytes). This specification intentionally does not mandate one optimizer
+algorithm.
 
 ---
 
@@ -997,7 +860,8 @@ The image has one content region split into two contiguous parts:
   visible filename blobs.
 - Private part: `[private_off, image_size)`, all other bytes.
 
-Content-pointer visibility is determined only by comparison with `private_off`.
+A content pointer's part is determined only by comparison with `private_off`
+(see **Format Overview**).
 
 ### Exported Path Model
 
@@ -1022,26 +886,7 @@ directory may contain `/hide/$uuid/...`: callers that already know `$uuid` may
 traverse it, but names below `/hide` remain private-part content and cannot be
 exposed by `leaking` or `dirty` neighbor spill.
 
-### Shared Blob Deduplication Domain
-
-- Regular-file payload bytes and filename bytes are blobs in one shared dedup
-  class domain.
-- Blob-class key is exact byte identity of announced bytes.
-- Part assignment is by class promotion: if any occurrence in a blob class is
-  public (public-eligible payload reference or public-visible filename
-  occurrence), that blob class is stored in the public part; otherwise it is
-  stored in the private part.
-- As a result, non-public file objects and private-tree entries may reference
-  public-part blobs whenever the referenced bytes are shared with at least one
-  public occurrence.
-
-Symlink targets are always stored in the private part and are outside this
-shared payload/filename blob domain. A future revision that defines metadata-
-extension payloads must place them in the private part as well.
-
-Interpretation is determined by references, not embedded tags.
-
-### Blob Encoding And Word Alignment
+### Blob Encoding and Word Alignment
 
 All payload and filename blobs stored in content parts use one canonical
 encoded form:
@@ -1063,13 +908,12 @@ Consequences:
   is always `0x00`.
 - Object-reported size remains the original announced size (`size` for file
   objects); suffix bytes are never part of object-visible length.
+- The complete stored blob must remain within one content part. A stored blob
+  smaller than `PAGE_SIZE` must not cross an image-page boundary; one of at
+  least `PAGE_SIZE` must start on an image-page boundary.
 
-Every encoded-blob offset is 4-byte aligned. Its announced bytes are followed
-by exactly the canonical zero suffix described above, and the complete stored
-blob must remain within one content part. For packing checks, `content size`
-always means `stored_blob_bytes`: a stored blob smaller than `PAGE_SIZE` must
-not cross an image-page boundary, while one at least `PAGE_SIZE` must start on
-an image-page boundary.
+Blob interpretation is determined by the references to it, not by embedded
+tags.
 
 Implementation note (performance, non-normative):
 - Kernel code MAY scan filename blobs as a sequence of 32-bit words and treat a
@@ -1081,18 +925,15 @@ Implementation note (performance, non-normative):
 ### Packing Algorithm (Per Content Part)
 
 Public and private parts are packed independently with the same algorithm.
-All contents are sorted descending by size.
-A sorted free-hole set (by hole size, then offset) tracks page-padding gaps.
+All contents are sorted descending by size, where a content's size is always
+its `stored_blob_bytes`, not its announced size. A sorted free-hole set (by
+hole size, then offset) tracks page-padding gaps.
 
 For each content:
 
 1. Try smallest fitting hole.
 2. If no hole fits, append at tail.
 3. If append would straddle page, advance tail to next page and record gap.
-
-Packing unit:
-- `content` size used by this algorithm is encoded blob size
-  `align_up(announced_bytes + 1, 4)`, not announced size.
 
 Consequences (per part):
 - Contents `>= PAGE_SIZE` become page-aligned by construction.
@@ -1101,34 +942,34 @@ Consequences (per part):
 - Every byte not occupied by an encoded blob, including free holes and part-end
   alignment gaps, must be written as `0x00`.
 
-### Deduplication
+### Deduplication and Part Assignment
 
-Deduplication may cross object kinds by promotion:
-- One shared blob class domain is used for regular-file payload bytes and
-  filename bytes.
-- For any shared blob class, store exactly one copy in exactly one content part:
-  the public part if the class has at least one public occurrence, otherwise
-  the private part.
-- Cross-part duplication of a shared payload/filename blob class is not
-  allowed.
-- Stored blob bytes are derived deterministically from announced bytes by the
-  canonical terminator/alignment rule above.
+Regular-file payload bytes and filename bytes form one shared deduplication
+domain, so deduplication may cross object kinds:
+- A blob class is keyed by the exact announced bytes. Each class is stored
+  exactly once, in exactly one content part; cross-part duplication is not
+  allowed. Its stored bytes follow deterministically from the announced bytes
+  by **Blob Encoding and Word Alignment**.
+- Part assignment is by promotion: a class with at least one public occurrence
+  (a public-eligible payload reference or a public-visible filename occurrence)
+  is stored in the public part, otherwise in the private part. Non-public
+  objects and private-tree entries may therefore reference public-part blobs
+  that they share with a public occurrence.
+- This placement is a mount-safety invariant, not merely a builder
+  optimization: every shared-domain interval in the public part must have at
+  least one public reference under **Visibility Classification**.
+- Symlink targets are outside the shared domain and always in the private part.
+  A symlink target never aliases a regular-file payload or filename interval,
+  even when its bytes are equal. A future revision that defines
+  metadata-extension payloads must place them in the private part as well.
 
 Content-interval rules:
-- References in the shared regular-file/filename domain with identical
-  announced bytes must use the same image offset and stored interval.
-- References may share an interval only when their deduplication domain and
-  announced bytes are identical. A symlink target never aliases a regular-file
-  payload or filename interval, even when its bytes are equal.
-- Distinct stored intervals must not overlap.
-- Every byte in the content region not belonging to a unique stored interval
-  is padding or a packing hole and must be `0x00`.
-
-Public/private placement is also a mount-safety invariant, not merely a builder
-optimization. For every shared-domain interval in the public part, at least
-one reference must come from a public-eligible canonical regular-file inode or
-a public-visible filename occurrence under the visibility rules above.
-Symlink targets must always be in the private part.
+- References in the shared domain with identical announced bytes must use the
+  same image offset and stored interval.
+- References may share an interval only when their domain and announced bytes
+  are identical.
+- Distinct stored intervals must not overlap. Every other content byte is
+  padding or a packing hole and is zero (see **Alignment and Padding**).
 
 ---
 
@@ -1164,13 +1005,12 @@ logical address of the requested file bytes. The mapped VM range is exactly
 when `source_shift != 0`. All additions and alignment operations above are
 checked operations and MUST reject overflow.
 
-Public/private eligibility is derived from the `private_off` boundary:
-- A file payload is public when `data_off < private_off`.
-- A file payload is private when `data_off >= private_off`.
-- Public payloads may use direct mapping with neighbor spill according to rules
-  below.
-- Private payloads must use clean behavior (no private-byte spill), even when
-  mount mode is `dirty` or `leaking`.
+Public/private eligibility follows the payload's `data_off` (see **Format
+Overview**):
+- Public payloads may use direct mapping with neighbor spill according to the
+  rules below.
+- Private payloads must use clean behavior (no private-byte spill) in every
+  mount mode, including `dirty` and `leaking`.
 - The `dirty` unaligned optimization applies only to public-eligible file
   inodes with `size < PAGE_SIZE`, even if additional non-public objects
   reference the same promoted public bytes.
@@ -1224,23 +1064,14 @@ Public/private eligibility is derived from the `private_off` boundary:
   public part.
 
 The shifted returned address and visible leading/trailing bytes are intentional
-non-POSIX behavior selected by mounting in `dirty` mode.
+non-POSIX behavior selected by mounting in `dirty` mode. When `dirty` remains
+the effective mode, every otherwise valid mapping of a nonempty public-eligible
+file therefore uses direct image pages and no copied clean pages: files with
+`size >= PAGE_SIZE` use the `leaking` path, while smaller files use a shifted
+logical address.
 
-Operational summary:
-- Clean behavior copies at most one kernel VM page for a file no larger than
-  `VM_PAGE_SIZE`. For a larger file, it copies at most the final partial kernel
-  VM page when `data_off` is VM-page-aligned. Only a larger, unaligned file may
-  require additional copied pages. Copied pages are populated lazily and are
-  cacheable.
-- Leaking mode can avoid that copy for suitably VM-page-aligned public-part
-  files with `size >= VM_PAGE_SIZE`.
-- When `dirty` remains the effective mode, every otherwise valid mapping of a
-  nonempty public-eligible file uses direct image pages and no copied clean
-  pages: files with `size >= PAGE_SIZE` use the `leaking` path, while smaller
-  files use a shifted logical address.
-- Private-part files never leak neighboring bytes in any mount mode.
-
-Anonymous-page cache key for clean behavior:
+Copied clean pages are populated lazily and are cacheable. Anonymous-page cache
+key for clean behavior:
 - Key by stable source location of copied bytes, i.e. image-relative offset of
   the first copied byte (`src_first_byte_off`).
 - Public/private classification is derivable from `private_off`, so separate
@@ -1253,18 +1084,9 @@ Anonymous-page cache key for clean behavior:
 
 ## Alignment and Padding
 
-Header and metadata table:
-- `femtofs_header` is exactly 128 bytes.
-- `femtofs_object` is exactly 16 bytes.
-- `femtofs_attr` is exactly 16 bytes.
-- No inter-record padding.
-
-Content region split:
+Record sizes are fixed by the **On-disk ABI Rules**; blob alignment is fixed by
+**Blob Encoding and Word Alignment**. In addition:
 - `public_off`, `private_off`, and `image_size` must be image-page-aligned.
-- `private_off` marks the start of the private part and therefore the end of
-  the public part.
-- Contents `>= PAGE_SIZE` are page-aligned by packing algorithm.
-- Contents `< PAGE_SIZE` must remain page-contained.
 - All bytes in the header/metadata-to-content alignment gap, content-packing
   holes, public/private alignment gap, and final image padding must be `0x00`.
   Builders must initialize these ranges explicitly. Full validation must reject
@@ -1312,12 +1134,8 @@ Header and top-level bounds:
 - Root hash control (`root_p`) must decode to:
   - mode in `{FEMTOFS_HASH_MODE_SINGLE, FEMTOFS_HASH_MODE_DUAL}`
   - `p1_index < SMALL_PRIMES_COUNT`.
-- Implementations SHOULD check `meta_hash` to ensure metadata-table integrity:
-  `meta_hash == fnv_32_buf(image + 128, meta_size, FNV1_32_INIT)`.
-- Implementations MAY check `image_hash` at mount/open time:
-  `image_hash == fnv_32_buf(image + offsetof(struct femtofs_header, uuid), image_size - offsetof(struct femtofs_header, uuid), FNV1_32_INIT)`.
-- To decide whether two images are "the same image", implementations SHOULD
-  check exact equality of the first 32 header bytes, through `uuid[3]`.
+- Implementations SHOULD verify `meta_hash` and MAY verify `image_hash` as
+  defined in **Integrity Hashes**.
 
 Metadata role map and object graph:
 - Validation must start with the root bucket slice and recursively discover
@@ -1448,16 +1266,6 @@ Hardlink rules:
 - `data_off` (target index) must be `< cell_count`.
 - Target must be a discovered `FILE` object outside all directory slices
   (never `DIR`, `SYMLINK`, `FIFO`, `HARDLINK`, `ATTR`, `NULL`, or a bucket).
-
-Builder source-tree mapping policy:
-- Supported source inode kinds are regular file, directory, symlink, and FIFO.
-- Additional directory entries that reference the same regular-file inode are
-  encoded as `FEMTOFS_TYPE_HARDLINK`.
-- Hardlinks to non-regular files are not supported.
-- If multiple source paths reference the same FIFO inode, image build must fail
-  explicitly.
-- Unsupported source inode kinds (device nodes, socket, whiteout, etc.) must
-  make image build fail explicitly.
 
 Reader behavior on violation:
 - Any detected violation above is a hard format error; mount/open/regeneration
