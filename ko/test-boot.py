@@ -135,6 +135,7 @@ reboot -p
 ''')
 
 (data/'identity').write_text('FemtoFS data\n')
+shutil.copy('/bin/echo', data/'dynamic-echo')
 (data/'hidden').mkdir(mode=0o700)
 for size in (0, 1, 4095, 4096, 4097, 8192, 10000, 4194304):
     (data/f'file-{size}').write_bytes(bytes(i % 251 + 1 for i in range(size)))

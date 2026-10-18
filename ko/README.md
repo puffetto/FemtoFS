@@ -104,8 +104,11 @@ entropy_dir="/var/db/entropy"
 dumpdev="NO"
 ```
 
-An accompanying root entry is `root / femtofs ro,clean 0 0`; do not also put
-`/var` and `/tmp` in `fstab` when rc creates them through `varmfs` and `tmpmfs`.
+An accompanying root entry is `root / femtofs ro,clean 0 0`. Its mapping mode
+must match `vfs.root.mountfrom.options`; alternatively use only `ro` so
+`mountcritlocal` cannot request a policy change during its root-mount update.
+Do not also put `/var` and `/tmp` in `fstab` when rc creates them through
+`varmfs` and `tmpmfs`.
 Host identity and SSH host keys must be provisioned deliberately; keys which
 identify the appliance cannot be generated afresh on a read-only `/etc`. Bake
 matching `/etc/hostid` and `/etc/machine-id`; `hostid_save` then finds the

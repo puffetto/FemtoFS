@@ -128,6 +128,9 @@ for mode in ('clean', 'leaking'):
     Path('/tmp/alias-expected').write_bytes(alias_bytes + bytes((-len(alias_bytes)) % 4096))
     run('/test-mmap', alias/'identity', '/tmp/alias-expected', mount)
     print('FEMTOFS_BOOT nullfs mmap passed', flush=True)
+    result = run(alias/'dynamic-echo', 'nullfs exec passed', capture_output=True, text=True)
+    assert result.stdout == 'nullfs exec passed\n'
+    print('FEMTOFS_BOOT nullfs dynamic exec passed', flush=True)
     refuse('umount', mount)
     run('umount', alias)
     for name, (off, size) in files.items():
