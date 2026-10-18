@@ -379,7 +379,17 @@ sudo python3 ko/test-boot-compressed.py build/makefemtofs /usr/src tmp/compresse
 It requires matching installed FreeBSD sources/binaries and QEMU. The work
 directory must be new; its console log and image artifacts are retained.
 Its automatic root console login and generated test keys are isolated test
-fixtures, not deployment settings. Boot results are recorded after verification.
+fixtures, not deployment settings.
+
+Verified on 18 October 2026 with stock FreeBSD **15.1-RELEASE-p4 amd64**, QEMU
+TCG/BIOS, two CPUs and 1,536 MiB RAM: a **339,423,232-byte** root image stored
+as **109,361,667 bytes** of gzip data boots through stock rc and console login.
+File checksums, read-only root enforcement, writable `/var` and `/tmp`,
+syslogd/cron/sshd, loopback SSH and `su` pass. The boot disk is never mounted;
+all userspace runs from FemtoFS. Bank counters report the full decompressed
+size as loader-owned storage and zero imported bytes. Shutdown syncs buffers
+and powers off; the existing forced-unmount limitation still prints
+`unmount of / failed (45)`. UEFI and physical hardware have not been tested.
 
 ## Pitch In One Sentence
 

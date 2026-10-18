@@ -92,13 +92,15 @@ vfs.root.mountfrom.options="ro,clean,bank=root"
 
 The image must contain `/dev`, `/tmp`, `/var` and the `/boot/kernel` modules
 matching the running kernel. Its `fstab` entry for `/` must use fsck pass 0.
-This is a candidate minimum `rc.conf` profile for stock rc:
+The compressed-root acceptance test exercises stock rc with this read-only
+storage profile (see the [complete boot recipe](../README.md#booting-a-compressed-0fs-root-image)):
 
 ```text
 root_rw_mount="NO"
 varmfs="YES"
 populate_var="YES"
 tmpmfs="YES"
+entropy_boot_file="NO"
 entropy_file="/var/db/entropy-file"
 entropy_dir="/var/db/entropy"
 dumpdev="NO"
@@ -114,9 +116,11 @@ identify the appliance cannot be generated afresh on a read-only `/etc`. Bake
 matching `/etc/hostid` and `/etc/machine-id`; `hostid_save` then finds the
 current values and does not rewrite them. Bake every enabled
 `/etc/ssh/ssh_host_*_key`, or disable the missing key algorithms, so the sshd
-pre-start hook does not invoke `ssh-keygen`. Stock multi-user rc boot with this
-complete profile remains a beta acceptance test rather than a verified
-configuration.
+pre-start hook does not invoke `ssh-keygen`. Provide `/etc/motd.template` and
+make `/etc/motd` a symlink to `/var/run/motd`. The compressed-root test boots
+stock rc through console login, running syslogd/cron/sshd, loopback SSH, `su`
+and shutdown; its full appliance configuration is in
+[`test-boot-compressed.py`](test-boot-compressed.py).
 
 If bank registration or root validation fails, the kernel logs the reason and
 mountroot eventually enters its console prompt. Set `vfs.mountroot.timeout` to
@@ -188,6 +192,7 @@ contract limitation.
 Use a stock boot tree and matching source tree. No host reboot or boot installation:
 
 ```sh
+sudo python3 ko/test-boot-compressed.py build/makefemtofs /usr/src tmp/compressed-boot
 python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-root
 python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-control control
 python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-reverse reverse
@@ -198,7 +203,14 @@ env FEMTOFS_TEST_KERNBUILDDIR=/usr/obj/usr/src/amd64.amd64/sys/FEMTOFS_DEBUG \
     python3 ko/test-boot.py /boot build/makefemtofs /usr/src tmp/nodev-debug-root-smoke root-smoke
 ```
 
-The harness builds module/static tools, boots QEMU without networking, and keeps
+The compressed test uses stock loader configuration and an approximately
+324 MiB trimmed base tree compressed as `bootme.0fs.gz`. Its boot disk contains
+no uncompressed root image and is never mounted by the guest. A stock serial
+getty/login starts the assertions after rc completes. Console autologin and
+fixture SSH keys are for this isolated guest only. It retains its build/image
+artifacts and console log. Physical hardware and UEFI remain untested.
+
+The original `test-boot.py` harness builds module/static tools, boots QEMU without networking, and keeps
 console logs. Stock init and probes are static; the normal dynamic `/bin/sh`,
 `echo`, `cat`, runtime linker and base libraries are stored in FemtoFS. The shell
 runs before the auxiliary UFS runtime is mounted. Python/builder live on UFS.
