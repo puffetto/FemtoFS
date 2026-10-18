@@ -157,60 +157,89 @@ Major-1 consumers that do not understand an extension ignore it and continue
 to enforce classic `mode`, `uid`, and `gid`; such an incremental extension does
 not require a new major format version.
 
-## Example Size and Cost Model for a Minimal FreeBSD Boot Image
+## UFS+md versus FemtoFS: a minimal FreeBSD 15.1 distribution
 
-Reference inputs:
-- `FemtoFS` image-size estimate from `programs/femtofsSim` on `misc/list`
-  (mixed hash default, 4 KiB pages)
-- UFS image size from the corresponding space-optimized reference build:
-  **202,829,824 B** (**193.43 MiB**)
+Measured on **18 October 2026**, using the same trimmed **FreeBSD
+15.1-RELEASE-p4 amd64** root tree produced by
+[the compressed-boot acceptance test](ko/test-boot-compressed.py). This is a
+working multi-user appliance tree with stock utilities, shared libraries,
+configuration, locale/zoneinfo data, and kernel/module files, rather than a
+complete base installation with development files and documentation. It has
+**4,076 directory entries**, **287 directories including root**, and **2,904
+regular-file inodes**. The compressed FemtoFS image boots through stock rc,
+console login and service checks; see [BOOTING.md](BOOTING.md).
 
-These are size estimates and operation-count models, not mounted-filesystem
-benchmarks or elapsed-time measurements.
+Actual **uncompressed filesystem image lengths**, excluding the surrounding
+boot disk, partition table and bootloader:
 
-Image footprint:
-- `FemtoFS` estimated full image (public/private split): **179,146,752 B**
-  (**170.85 MiB**)
-- Delta vs UFS reference image: **-23,683,072 B** (**-11.68%**)
+| Filesystem | Block / fragment or image page size | Bytes | MiB |
+| --- | --- | ---: | ---: |
+| UFS2 | 4,096 B blocks / 4,096 B fragments | 374,276,096 | 356.94 |
+| UFS2 | 4,096 B blocks / 512 B fragments | 368,861,184 | 351.77 |
+| FemtoFS (`bootme.0fs`) | 4,096 B image pages | 339,423,232 | 323.70 |
 
-Modeled directory lookup cost for newly accessed paths:
-- All averages below are entry-weighted over the same directory entries.
-- UFS (no `dirhash`, no namecache hit): linear scan, about **`(n+1)/2`**
-  `strcmp()` on success and **`n`** on miss in a directory with `n` entries
-- On this dataset (`N=4041` entries across `252` directories), using
-  entry-weighted directory sizes: rough UFS expectation is
-  **~83.75** `strcmp()` success, **~166.49** miss
-- Replaying the specified lookup algorithm over the bucket layout selected by
-  the current `makefemtofs` policy gives **4,807 / 4,041** `strcmp()` calls on
-  successful lookups: **1.1896** per lookup. **3,322 / 4,041** lookups
-  (**82.2074%**) finish after one `strcmp()`; the maximum stored chain length
-  is **2**, while a lookup can make up to **3** comparisons across both anchors.
-- Unsuccessful lookup cost depends on the queried names. Under the simulator's
-  independent uniform-anchor model, the current builder-equivalent policy
-  averages **0.8229** `strcmp()` per miss. This includes queries starting at
-  overflow buckets and probes equal anchors only once.
-- UFS `dirhash` and VFS namecache can materially change real results, especially
-  for repeated lookups. The counts above do not establish wall-clock performance
-  or general superiority for either filesystem.
+FemtoFS is **34,852,864 bytes (9.31%)** smaller than the first UFS image and
+**29,437,952 bytes (7.98%)** smaller than the second. These include each format's
+metadata and packing overhead, and FemtoFS's identical-content deduplication.
+The same FemtoFS image compresses to **109,361,667 bytes** with gzip.
 
-`mmap()` page-path estimate (UFS vs a resident `FemtoFS` bank, `clean` mode):
-- Selection rule used for estimate: non-symlink files ending in `.so`, plus
-  regular files in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`, `/usr/local/bin`,
-  `/usr/local/sbin`
-- After inode-identity deduplication, that rule selects **804 files** containing
-  **18,628 logical 4 KiB pages**. The listing cannot reveal byte-identical
-  payloads belonging to different inodes, which `makefemtofs` may deduplicate.
-- With 4 KiB image and VM pages, current packing rules and the clean-mode
-  contract classify **17,825 / 18,628 pages** (**95.69%**) as directly
-  representable from the image. The remaining **803 / 18,628 pages**
-  (**4.31%**) use a clean copied-page path: 29 whole small-file pages and 774
-  partial tail pages.
-- A simple UFS first-touch comparison counts up to all **18,628** logical
-  pages as newly materialized. Cache state and pager behavior can reduce the
-  actual work.
-- No kernel implementation was exercised for these figures. "Directly
-  representable" describes eligibility under the format and `mmap()` contract,
-  not observed zero-copy execution or timing.
+**512 bytes is the UFS fragment size, not its block size.** FreeBSD `makefs`
+rejects 512-byte blocks; its minimum UFS block size is 4 KiB. Both measured UFS2
+images were built with the following settings, changing only `fragment`:
+
+```sh
+for fragment in 4096 512; do
+    sudo makefs -t ffs \
+        -o version=2,bsize=4096,fsize=$fragment,minfree=1,optimization=space \
+        ufs-frag$fragment.ufs appliance-root
+done
+```
+
+Automatic sizing with `minfree=0` ran out of space while populating this tree.
+With `minfree=1`, both builds completed; their actual unallocated space is
+**1,691,648 bytes** and **3,053,056 bytes**, respectively. These are reproducible
+build settings, not a claim of the smallest possible UFS images. Both passed
+FreeBSD `fsck_ufs -fn` and read-only md mount checks. All **4,077 paths including
+root** matched the source tree in type, mode, uid/gid, regular-file size and
+SHA-256, and symlink target; the same checks passed for the decoded FemtoFS image.
+
+Directory lookup analysis of this actual image:
+
+- Replaying the specified lookup algorithm over every stored name gives
+  **4,750 / 4,076 comparisons**, or **1.1654 per successful lookup**.
+  **3,444 / 4,076 (84.49%)** finish with one comparison. The maximum stored
+  chain length is **2**; probing both anchors can take **4 comparisons**.
+  The simulator's default mixed policy independently reproduces these counts.
+- Misses depend on the queried names. The independent uniform-anchor model
+  gives **0.8807 comparisons per miss**, weighting directories by entry count
+  and probing equal anchors only once.
+- For comparison, a simple linear directory-scan model gives **76.73 name
+  comparisons on success** and **152.46 on a miss**, using `(n+1)/2` and `n`
+  for a directory with `n` entries and the same weighting. These are models,
+  not measured UFS lookup counts: UFS `dirhash`, namecache hits and name-length
+  filtering affect actual work. No lookup timing benchmark is claimed.
+
+`mmap()` layout analysis with 4 KiB VM pages and FemtoFS `clean` mode:
+
+- Select regular ELF files recursively under `/bin`, `/sbin`, `/usr/bin`,
+  `/usr/sbin`, `/usr/libexec`, `/lib`, `/libexec`, and `/usr/lib`, including
+  versioned shared libraries. Count hardlinked files once. This selects
+  **1,170 file inodes** with **70,338 logical pages (274.76 MiB)**.
+- Actual stored offsets make **69,168 pages (98.34%)** directly mappable from
+  the resident image. The remaining **1,170 (1.66%)** are partial last pages
+  requiring a zero-filled clean copy; none of the selected ELF files is smaller
+  than a page.
+- After identical-content deduplication, those files occupy **1,004 stored
+  blobs**, with **64,388 distinct direct source pages** and **1,004 distinct
+  clean tails**. Faulting every selected page would therefore allocate
+  **4,112,384 bytes (3.92 MiB)** of clean-page storage, shared within the mount,
+  in addition to the resident bank. Private writes allocate separate COW pages.
+- UFS on a preload md retains its backing image and populates a separate file
+  cache as data is accessed; processes mapping the same file share those cached
+  pages. FemtoFS instead aliases the bank's eligible pages. The figures above
+  describe whole files, not just the ELF segments touched during startup, and
+  exclude kernel bookkeeping, page tables and private COW copies. They are
+  layout counts, not measured process RSS, boot peak RAM or fault timings.
 
 ## Repository Status
 
@@ -283,113 +312,8 @@ output.
 
 ## Booting a compressed `.0fs` root image
 
-Use FreeBSD 15.1 amd64 with a `femtofs.ko` built against the running kernel's
-matching sources (see [module build instructions](ko/README.md#build-and-use)).
-The loader and kernel stay on a normal bootable filesystem; the appliance root
-lives in a named resident bank. No md device or kernel patch is required.
-
-Prepare a trimmed FreeBSD root tree containing stock `/sbin/init`, `/bin/sh`,
-their libraries, `/etc/rc`, the required base utilities and configuration.
-Include `/dev`, `/var`, `/tmp`, and the `mount_femtofs` helper in `/sbin`.
-Keep any modules needed after root mounting in the tree's `/boot/kernel`.
-The format allows at most 32,767 non-root objects; an untrimmed base installation
-with development files and documentation can exceed that limit.
-
-For a read-only root, put these settings in the **image's** `/etc/rc.conf`:
-
-```sh
-hostname="appliance"
-root_rw_mount="NO"
-varmfs="YES"
-populate_var="YES"
-tmpmfs="YES"
-entropy_boot_file="NO"
-entropy_file="/var/db/entropy-file"
-entropy_dir="/var/db/entropy"
-dumpdev="NO"
-```
-
-Use this root entry in the image's `/etc/fstab` (the last zero disables fsck):
-
-```text
-root / femtofs ro,clean 0 0
-```
-
-Do not also configure `/var` and `/tmp` in fstab when rc creates them using
-`varmfs`/`tmpmfs`; their contents are volatile. Provision a unique `/etc/hostid`
-and matching `/etc/machine-id`, accounts and any enabled SSH host keys before
-building. Set `/etc/motd` to a symlink to `/var/run/motd` and provide
-`/etc/motd.template`, so stock rc need not rewrite `/etc`. Select services
-appropriate to the appliance and arrange writable storage for their state.
-
-Build and compress the prepared tree, preserving its intended numeric ownership
-and permissions:
-
-```sh
-sudo build/makefemtofs --temp-dir "$PWD/tmp" appliance-root bootme.0fs
-gzip -n -9 -c bootme.0fs > bootme.0fs.gz
-```
-
-Install `bootme.0fs.gz` as `/boot/bootme.0fs.gz` on the **boot filesystem** and
-install the matching module as `/boot/kernel/femtofs.ko`. In that filesystem's
-`/boot/loader.conf`, use:
-
-```text
-femtofs_load="YES"
-bootme_load="YES"
-bootme_type="femtofs_image"
-bootme_name="/boot/bootme.0fs"
-femtofs.bank.root="/boot/bootme.0fs"
-vfs.root.mountfrom="femtofs:"
-vfs.root.mountfrom.options="ro,clean,bank=root"
-```
-
-**Omit `.gz` in the loader settings.** FreeBSD's loader opens the `.gz` file
-through its transparent decompressor when asked for the unsuffixed name.
-Explicitly requesting `bootme.0fs.gz` bypasses that decompression path. Leave
-only the compressed file at this location to avoid selecting a stale
-uncompressed image. The bank mapping uses the loader-recorded unsuffixed name;
-`root` is the bank label, not an image filename. The settings use the stock
-[`loader.conf` module directives](https://docs.freebsd.org/en/books/handbook/boot/).
-
-The equivalent loader-prompt commands, after loading the matching kernel, are:
-
-```text
-load /boot/kernel/femtofs.ko
-load -t femtofs_image /boot/bootme.0fs
-set femtofs.bank.root=/boot/bootme.0fs
-set vfs.root.mountfrom="femtofs:"
-set vfs.root.mountfrom.options="ro,clean,bank=root"
-boot
-```
-
-The loader decompresses the image into RAM. FemtoFS validates and adopts those
-pages without allocating another full-image copy. Compression saves boot-medium
-space; RAM must still accommodate the entire decompressed bank, kernel, runtime
-state, and writable filesystems. Clean mappings may allocate shared tail pages,
-and private writes allocate COW pages.
-
-The disposable acceptance test uses a real trimmed base tree, stock loader and
-stock rc, with only `bootme.0fs.gz` on the boot disk:
-
-```sh
-sudo python3 ko/test-boot-compressed.py build/makefemtofs /usr/src tmp/compressed-boot
-```
-
-It requires matching installed FreeBSD sources/binaries and QEMU. The work
-directory must be new; its console log and image artifacts are retained.
-Its automatic root console login and generated test keys are isolated test
-fixtures, not deployment settings.
-
-Verified on 18 October 2026 with stock FreeBSD **15.1-RELEASE-p4 amd64**, QEMU
-TCG/BIOS, two CPUs and 1,536 MiB RAM: a **339,423,232-byte** root image stored
-as **109,361,667 bytes** of gzip data boots through stock rc and console login.
-File checksums, read-only root enforcement, writable `/var` and `/tmp`,
-syslogd/cron/sshd, loopback SSH and `su` pass. The boot disk is never mounted;
-all userspace runs from FemtoFS. Bank counters report the full decompressed
-size as loader-owned storage and zero imported bytes. Shutdown syncs buffers
-and powers off; the existing forced-unmount limitation still prints
-`unmount of / failed (45)`. UEFI and physical hardware have not been tested.
+See [BOOTING.md](BOOTING.md) for image preparation, bootloader settings,
+read-only root configuration, and verified boot results.
 
 ## Pitch In One Sentence
 

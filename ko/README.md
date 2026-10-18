@@ -93,7 +93,7 @@ vfs.root.mountfrom.options="ro,clean,bank=root"
 The image must contain `/dev`, `/tmp`, `/var` and the `/boot/kernel` modules
 matching the running kernel. Its `fstab` entry for `/` must use fsck pass 0.
 The compressed-root acceptance test exercises stock rc with this read-only
-storage profile (see the [complete boot recipe](../README.md#booting-a-compressed-0fs-root-image)):
+storage profile (see the [complete boot recipe](../BOOTING.md)):
 
 ```text
 root_rw_mount="NO"
