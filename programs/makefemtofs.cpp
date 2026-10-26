@@ -1839,7 +1839,7 @@ void encodeMetadata(ImagePlan& plan)
                 continue;
             std::span<uint8_t> cell = cellAt(absolute);
             if (!directory.buckets[i]) {
-                femtofs::store32(cell, 12, directory.hash.tableSize);
+                femtofs::store16(cell, 14, static_cast<uint16_t>(directory.hash.tableSize));
                 continue;
             }
             const Bucket& bucket = *directory.buckets[i];
@@ -1847,7 +1847,8 @@ void encodeMetadata(ImagePlan& plan)
             cell[0] = static_cast<uint8_t>(target.kind);
             femtofs::store32(cell, 4, target.objectIndex);
             femtofs::store32(cell, 8, plan.blobs[target.nameBlob].imageOff);
-            femtofs::store32(cell, 12, bucket.next);
+            cell[13] = static_cast<uint8_t>(target.name.size());
+            femtofs::store16(cell, 14, static_cast<uint16_t>(bucket.next));
         }
     }
 

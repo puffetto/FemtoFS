@@ -53,6 +53,8 @@ class Images(unittest.TestCase):
         os.mkfifo(src / 'fifo', 0o644)
         for name in Path('units/dual-hash-names.txt').read_text().splitlines():
             (src / name).write_bytes(b'deduplicated')
+        for name in ('x', 'y' * 255):
+            (src / name).write_bytes(b'name length boundary')
         image = cls.base / 'valid.0fs'
         subprocess.run([BUILDER, '--temp-dir', str(cls.base), str(src), str(image)], check=True, capture_output=True)
         cls.good = image.read_bytes()
@@ -121,11 +123,23 @@ class Images(unittest.TestCase):
         self.check(b, checksum=False)
 
     def test_bucket_and_chains(self):
-        for delta, value in ((4, 65536), (4, u32(self.good, 52)), (8, 0),
-                             (12, u32(self.good, 56)+1), (12, (self.bucket-self.root)//16)):
+        for delta, value in ((4, 65536), (4, u32(self.good, 52)), (8, 0)):
             with self.subTest(delta=delta, value=value):
                 b = bytearray(self.good); put(b, self.bucket+delta, value); self.check(b)
         b = bytearray(self.good); b[self.bucket+1] = 1; self.check(b)
+        for next_index in (u32(self.good, 56)+1, (self.bucket-self.root)//16):
+            b = bytearray(self.good)
+            struct.pack_into('<H', b, self.bucket+14, next_index)
+            self.check(b)
+
+    def test_bucket_name_length_and_reserved(self):
+        for value in (0, self.good[self.bucket+13]-1, self.good[self.bucket+13]+1):
+            b = bytearray(self.good); b[self.bucket+13] = value; self.check(b)
+        b = bytearray(self.good); b[self.bucket+12] = 1; self.check(b)
+        empty = next(self.root + 16*i for i in range(u32(self.good, 56))
+                     if self.good[self.root+16*i] == 0)
+        for delta in (12, 13):
+            b = bytearray(self.good); b[empty+delta] = 1; self.check(b)
 
     def test_payload_bounds_and_terminator(self):
         obj = self.objects['file-4097']

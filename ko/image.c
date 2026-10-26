@@ -121,7 +121,7 @@ static int chains(struct ff_image *im, struct work *w, struct ff_node *d)
     for (i = 0; i < d->size; i++) {
         const uint8_t *p = cell(im, d->off + i);
         if (!occupied(p)) continue;
-        next = ff_u32(p + 12);
+        next = ff_u16(p + 14);
         if (next > d->size) return EINVAL;
         w[d->off + i].parent = next;
         if (next != d->size) {
@@ -151,7 +151,7 @@ static int chains(struct ff_image *im, struct work *w, struct ff_node *d)
         if (!occupied(p)) continue;
         s = (const char *)im->bytes + ff_u32(p + 8);
         for (j = 0; j <= (uint32_t)(d->hash >> 6); j++) {
-            uint32_t a = hash(s, strlen(s), j ? im->hash2 : primes[d->hash & 63], d->size);
+            uint32_t a = hash(s, p[13], j ? im->hash2 : primes[d->hash & 63], d->size);
             struct work *v = &w[d->off + i], *anchor = &w[d->off + a];
             if (occupied(cell(im, d->off + a)) && v->enter <= anchor->enter &&
                 anchor->enter <= v->leave) reachable = 1;
@@ -206,10 +206,10 @@ int ff_validate(struct ff_image *im)
             const uint8_t *nul;
             if (p[0] == FF_ATTR) continue;
             if (!p[0]) {
-                if (!zero(p, 12) || ff_u32(p + 12) != d->size) goto out;
+                if (!zero(p, 14) || ff_u16(p + 14) != d->size) goto out;
                 continue;
             }
-            if (!occupied(p) || p[1] || ff_u16(p + 2)) goto out;
+            if (!occupied(p) || p[1] || ff_u16(p + 2) || p[12]) goto out;
             entries++;
             target = ff_u32(p + 4); nameoff = ff_u32(p + 8);
             if (target >= im->count || w[target].slice || w[target].object) goto out;
@@ -239,7 +239,7 @@ int ff_validate(struct ff_image *im)
             nul = memchr(h + nameoff, 0, length);
             if (!nul) goto out;
             length = (uint32_t)(nul - h - nameoff);
-            if (!length || memchr(h + nameoff, '/', length) ||
+            if (!length || length != p[13] || memchr(h + nameoff, '/', length) ||
                 (length == 1 && h[nameoff] == '.') ||
                 (length == 2 && h[nameoff] == '.' && h[nameoff + 1] == '.')) goto out;
             if (blob(im, nameoff, length, 0, d->names)) goto out;
@@ -316,17 +316,19 @@ void ff_destroy(struct ff_image *im)
 int ff_lookup(const struct ff_image *im, uint32_t dir, const char *name, size_t len, uint32_t *id)
 {
     const struct ff_node *d = &im->nodes[dir];
-    uint32_t pass, i;
+    uint32_t pass, i, first;
     if (!d->size) return ENOENT;
+    first = hash(name, len, primes[d->hash & 63], d->size);
     for (pass = 0; pass <= (uint32_t)(d->hash >> 6); pass++) {
-        i = hash(name, len, pass ? im->hash2 : primes[d->hash & 63], d->size);
+        i = pass ? hash(name, len, im->hash2, d->size) : first;
+        if (pass && i == first) break;
         while (i != d->size) {
             const uint8_t *p = cell(im, d->off + i);
             const char *s;
             if (!occupied(p)) break;
             s = (const char *)im->bytes + ff_u32(p + 8);
-            if (strlen(s) == len && !memcmp(name, s, len)) { *id = im->nodes[ff_u32(p + 4)].canonical; return 0; }
-            i = ff_u32(p + 12);
+            if (p[13] == len && !memcmp(name, s, len)) { *id = im->nodes[ff_u32(p + 4)].canonical; return 0; }
+            i = ff_u16(p + 14);
         }
     }
     return ENOENT;

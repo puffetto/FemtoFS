@@ -144,14 +144,16 @@ class BuilderCLI(unittest.TestCase):
             slices.update(claimed)
             names, occupied = set(), 0
             for relative in range(size):
-                kind, hash_p, attr, target, name_offset, next_index = cells[first + relative]
+                kind, hash_p, attr, target, name_offset, packed = cells[first + relative]
+                reserved, name_len, next_index = packed & 255, (packed >> 8) & 255, packed >> 16
                 if kind == 0:
-                    self.assertEqual((hash_p, attr, target, name_offset, next_index), (0, 0, 0, 0, size))
+                    self.assertEqual((hash_p, attr, target, name_offset, packed), (0, 0, 0, 0, size << 16))
                     continue
                 if kind == 0x81:
                     continue
                 self.assertIn(kind, range(1, 6))
                 self.assertEqual((hash_p, attr), (0, 0))
+                self.assertEqual(reserved, 0)
                 self.assertLessEqual(next_index, size)
                 self.assertLess(target, count)
                 self.assertNotIn(target, objects)
@@ -160,6 +162,7 @@ class BuilderCLI(unittest.TestCase):
                 terminator = image.index(0, name_offset, part_end)
                 name = image[name_offset:terminator]
                 self.assertTrue(1 <= len(name) <= 255)
+                self.assertEqual(name_len, len(name))
                 self.assertNotIn(b'/', name)
                 self.assertNotIn(name, (b'.', b'..'))
                 self.assertNotIn(name, names)
@@ -191,7 +194,7 @@ class BuilderCLI(unittest.TestCase):
                             self.lookup_comparisons += 1
                             lookup_done = anchor == relative
                         reached |= anchor == relative
-                        anchor = bucket[5]
+                        anchor = bucket[5] >> 16
                 self.assertTrue(reached)
                 obj = cells[target]
                 if kind != 4:

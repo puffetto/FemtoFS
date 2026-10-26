@@ -75,6 +75,26 @@ TEST_CASE("root and global metadata limits are independent", "[builder][bounds]"
     }
 }
 
+TEST_CASE("bucket tail stores reserved byte then byte length then little-endian link", "[builder][layout]")
+{
+    Fixture fixture;
+    Spool spool(fixture.options.tempDir);
+    auto plan = fixture.plan(spool, {builder_test::file("a", ""),
+        builder_test::file(std::string(255, 'z'), ""),
+        builder_test::file("\xc3\xa9", "")});
+    for (const auto& dir : plan.directories) {
+        for (uint32_t i = 0; i < dir.hash.tableSize; ++i) {
+            const auto bytes = std::span<const uint8_t>(plan.metadata).subspan(
+                (dir.first + i) * kCellSize, kCellSize);
+            if (bytes[0] == femtofs::kTypeAttr) continue;
+            CHECK(bytes[12] == 0);
+            const auto& bucket = dir.buckets[i];
+            CHECK(bytes[13] == (bucket ? plan.nodes[bucket->nodeIndex].name.size() : 0));
+            CHECK(femtofs::load16(bytes, 14) == (bucket ? bucket->next : dir.hash.tableSize));
+        }
+    }
+}
+
 TEST_CASE("attribute reuse affects deterministic metadata fallback", "[builder][budget]")
 {
     std::vector<Node> nodes;
@@ -255,6 +275,14 @@ TEST_CASE("maximum directory table fits when the independent cell budget permits
     CHECK(plan.cellCount == 65522);
     CHECK(femtofs::load32(plan.header, 56) == 65521);
     CHECK(femtofs::load32(plan.header, 60) == 1);
+    const auto& dir = plan.directories[0];
+    for (uint32_t i = 0; i < dir.hash.tableSize; ++i) {
+        const auto bytes = std::span<const uint8_t>(plan.metadata).subspan(
+            (dir.first + i) * kCellSize, kCellSize);
+        if (bytes[0] == femtofs::kTypeAttr) continue;
+        CHECK(bytes[12] == 0);
+        CHECK(femtofs::load16(bytes, 14) == 65521);
+    }
     REQUIRE_NOTHROW(validatePlan(plan));
     writeRegularOutput(fixture.options, plan, spool, fixture.inputStatus);
 }

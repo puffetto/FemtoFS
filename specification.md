@@ -2,6 +2,9 @@
 
 This document defines a compact, memory-friendly filesystem image format.
 
+**Frozen at 2026-10-25T14:42:45Z (UTC), format version `0x0100`.
+Any incompatible change after this timestamp MUST use a new major format version.**
+
 ## Scope
 
 The aim is to provide a filesystem image format optimal for booting a "firmware-like"
@@ -122,7 +125,7 @@ Metadata-table locations and quantities are expressed in cells, not bytes.
 `cell_count`, `root_size`, `root_real`, directory `size`, and directory packed
 `N` are counts. `root_first`, `root_attr`, object `attr_index`, and directory,
 hardlink, and bucket `data_off` are absolute metadata-table indices. Bucket
-`realsize` is an index relative to the start of its containing directory slice.
+`next_index` is relative to the start of its containing directory slice.
 
 The metadata table serves a triple role:
 - object metadata (`file`, `dir`, `symlink`, `fifo`, `hardlink`)
@@ -339,7 +342,9 @@ union femtofs_object_role {
     struct {
         uint32_t object_index;
         uint32_t name_off;
-        uint32_t next_index;
+        uint8_t  reserved;
+        uint8_t  name_len;
+        uint16_t next_index;
     } bucket;
 };
 
@@ -404,12 +409,13 @@ A cell's role depends on where it sits:
 | `FILE`, `SYMLINK` | unused | attribute index | `image_off`: image-relative payload offset | `content_size`: announced byte length, excluding the stored terminator and alignment padding | `reserved_flags`: `0` |
 | `FIFO` | unused | attribute index | `0` (no payload) | `0` | `0` |
 | `HARDLINK` | unused | `0` (attributes come from the target) | `target_index`: index of the canonical `FILE` | `reserved0`: `0` | `reserved1`: `0` |
-| occupied bucket | `0` | `0` | `object_index`: target object index | `name_off`: image-relative filename offset | `next_index`: slice-relative next bucket, or `tablesize` as the end sentinel |
-| empty bucket (`NULL`) | `0` | `0` | `0` | `0` | `tablesize` |
+| occupied bucket | `0` | `0` | `object_index`: target object index | `name_off`: image-relative filename offset | packed `{ reserved: u8 = 0, name_len: u8, next_index: u16 }` |
+| empty bucket (`NULL`) | `0` | `0` | `0` | `0` | packed `{ reserved: u8 = 0, name_len: u8 = 0, next_index: u16 = tablesize }` |
 
 - Metadata indices (`bucket_first`, `target_index`, `object_index`, attribute
   indices) are `< cell_count < 2^16`, so they are logically `u16` values carried
-  in wider fields whose upper bits are zero. `bucket_count` and `next_index`
+  in wider fields whose upper bits are zero (attribute indices are already
+  `u16`). `bucket_count` and the `u16` bucket `next_index`
   are bounded by `65521`. Byte offsets and `content_size` use the full 32-bit
   domain.
 - Builders should write `0` in every unused byte and bit. Readers should require
@@ -590,8 +596,15 @@ given in **Field Use by Cell Role**. In addition:
   slice; it cannot be a bucket, attribute, or unused cell.
 - Despite the compact `role.raw.size` alias, bucket `size` is a byte offset
   (`name_off`, a NUL-terminated filename), not a byte length.
-- Bucket `realsize` is relative to the start of its directory slice; it is not
-  an absolute metadata-table index.
+- The last four bytes of a bucket are, in address order: `reserved` (`u8`,
+  byte 12), `name_len` (`u8`, byte 13), and `next_index` (little-endian `u16`,
+  bytes 14–15). The complete bucket remains 16 bytes.
+- `reserved` must be zero. `name_len` is the filename length in bytes excluding
+  the NUL terminator: `1..255` for an occupied bucket and zero for an empty one.
+- `next_index` is relative to the start of its directory slice; it is not an
+  absolute metadata-table index. The end sentinel is `tablesize` (`<= 65521`),
+  which also fits in `u16`. The `role.raw.realsize` alias is a packed word for
+  buckets and must not be used as a chain index.
 - A cell is empty for lookup if its `type` is `FEMTOFS_TYPE_NULL` or has
   `FEMTOFS_TYPE_AUX` set. Builders must never emit chain links that target an
   auxiliary cell.
@@ -702,10 +715,11 @@ Implementation note (performance, non-normative):
 ### Lookup Algorithm
 
 ```c
-if (strcmp(query, ".") == 0)
+query_len = strlen(query); // use the supplied component length when available
+if (query_len == 1 && query[0] == '.')
     return current_directory;
 
-if (strcmp(query, "..") == 0) {
+if (query_len == 2 && query[0] == '.' && query[1] == '.') {
     if (is_root_directory)
         return root_directory;
     parent = FEMTOFS_DIR_GET_PARENT(dir->realsize);
@@ -746,12 +760,13 @@ for (a = 0; a < anchor_count; ++a) {
         continue;
 
     for (;;) {
-        name = image_base + buckets[idx].size;
-        if (strcmp(name, query) == 0)
+        name = image_base + buckets[idx].role.bucket.name_off;
+        if (buckets[idx].role.bucket.name_len == query_len &&
+            memcmp(name, query, query_len) == 0)
             return &cell_table[buckets[idx].data_off];
-        if (buckets[idx].realsize == tablesize)
+        if (buckets[idx].role.bucket.next_index == tablesize)
             break;
-        idx = buckets[idx].realsize;
+        idx = buckets[idx].role.bucket.next_index;
     }
 }
 
@@ -761,6 +776,10 @@ return ENOENT;
 This fast path assumes the image has already passed all normative validation,
 including slice bounds, bucket typing, filename termination, chain safety, and
 hash reachability.
+Equal primary and secondary anchors are traversed only once. Filename bytes
+are compared only after the stored length matches the query length; lookup
+does not scan candidate names to find their lengths. A VFS caller can supply
+the component length directly, avoiding even the query's `strlen`.
 
 ### Directory Listing
 
@@ -1181,7 +1200,8 @@ Cell typing, attributes, and reserved fields:
   `realsize == 0`.
 - For every discovered `HARDLINK` object, `attr_index == 0`, `size == 0`, and
   `realsize == 0`.
-- Every occupied bucket must have `hash_p == 0` and `attr_index == 0`.
+- Every occupied bucket must have `hash_p == 0`, `attr_index == 0`, and
+  `role.bucket.reserved == 0`.
 - If any directory, including root, uses `DUAL`, `hash2_base` must be prime and
   satisfy `2^8 < hash2_base < 2^24`; otherwise `hash2_base` must be `0`.
 
@@ -1194,10 +1214,11 @@ Directory-slice and hash-chain rules:
   `bucket_first == 0`; otherwise `bucket_first + tablesize <= cell_count`.
 - For every cell in a directory slice:
   - `NULL` is an empty bucket and must have `hash_p == 0`, `attr_index == 0`,
-    `data_off == 0`, `size == 0`, and `realsize == tablesize`;
+    `data_off == 0`, `size == 0`, `role.bucket.reserved == 0`,
+    `role.bucket.name_len == 0`, and `role.bucket.next_index == tablesize`;
   - an auxiliary cell is empty for directory purposes and must validate by its
     auxiliary type, without bucket-role field checks; or
-  - a non-null, non-auxiliary cell is an occupied bucket whose `realsize` is
+  - a non-null, non-auxiliary cell is an occupied bucket whose `next_index` is
     either the `tablesize` end sentinel or an index `< tablesize`.
 - `N` must equal the number of occupied buckets in the slice, and duplicate
   filenames within one directory are invalid.
@@ -1208,7 +1229,7 @@ Directory-slice and hash-chain rules:
     `h2 = femtofs_hash(name, hash2_base, tablesize)`;
   - equal `h1` and `h2` values represent one distinct anchor.
 - The occupied bucket at slice-relative index `i` must be reachable by
-  following `realsize` links from at least one of its own distinct anchors;
+  following `next_index` links from at least one of its own distinct anchors;
   reachability from an unrelated bucket or anchor is insufficient.
 - Validation must process every distinct computed anchor exactly as lookup
   does. A `NULL` or auxiliary anchor terminates that anchor immediately.
@@ -1222,7 +1243,7 @@ Filename and path-component rules:
   satisfy `public_off <= name_off < image_size`.
 - The first NUL terminator must occur within the same content part as
   `name_off`. The preceding filename length must be `1..255` bytes and those
-  bytes must not contain `'/'`.
+  bytes must not contain `'/'`. The stored `name_len` must equal that length.
 - On-disk directory entries named `"."` or `".."` are forbidden.
 - With `stored_name_bytes = align_up(name_length + 1, 4)`, the complete range
   `[name_off, name_off + stored_name_bytes)` must remain in that part, and all

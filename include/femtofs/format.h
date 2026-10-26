@@ -91,7 +91,9 @@ union ObjectRoleLayout {
     struct {
         uint32_t objectIndex;
         uint32_t nameOff;
-        uint32_t nextIndex;
+        uint8_t reserved;
+        uint8_t nameLen;
+        uint16_t nextIndex;
     } bucket;
 };
 
@@ -116,6 +118,9 @@ static_assert(offsetof(HeaderLayout, uuid) == 16);
 static_assert(offsetof(HeaderLayout, imageSize) == 32);
 static_assert(sizeof(ObjectRoleLayout) == 12);
 static_assert(sizeof(ObjectLayout) == kCellSize);
+static_assert(offsetof(ObjectLayout, role.bucket.reserved) == 12);
+static_assert(offsetof(ObjectLayout, role.bucket.nameLen) == 13);
+static_assert(offsetof(ObjectLayout, role.bucket.nextIndex) == 14);
 static_assert(sizeof(AttrLayout) == kCellSize);
 
 [[nodiscard]] constexpr uint32_t packParentEntries(uint16_t parent, uint16_t entries)

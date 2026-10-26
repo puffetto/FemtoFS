@@ -4,9 +4,14 @@
 CC ?= cc
 BUILD ?= tmp/ko-host
 CFLAGS ?= -O1 -g -Wall -Wextra -Werror -std=c11
-all: $(BUILD)/check-image
+all: $(BUILD)/check-image $(BUILD)/test-lookup
 $(BUILD)/check-image: ko/image.c ko/image.h ko/check-image.c
 	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) ko/image.c ko/check-image.c -o $@
-.PHONY: all
+$(BUILD)/test-lookup: ko/image.c ko/image.h ko/test-lookup.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) ko/test-lookup.c -o $@
+test: all
+	$(BUILD)/test-lookup
+.PHONY: all test
 # END File: ko/Makefile.host

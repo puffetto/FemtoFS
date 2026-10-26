@@ -12,7 +12,7 @@ results are historical and remain available in Git history.
 Run portable checks locally, commit/push, then pull and build on FreeBSD:
 
 ```sh
-make -f ko/Makefile.host
+make -f ko/Makefile.host test
 python3 ko/test-image.py build/makefemtofs tmp/ko-host/check-image tmp/ko-host
 ```
 
