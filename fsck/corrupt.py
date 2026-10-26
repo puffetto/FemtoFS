@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Corrupts test_subdir.img in specific, targeted ways and checks that
+"""Corrupts test_subdir.0fs in specific, targeted ways and checks that
 fsck_femtofs (a) flags an error and (b) exits nonzero, i.e. doesn't
 silently accept broken images. Each case is a single-byte or small edit
 chosen to hit one specific normative rule.
@@ -9,14 +9,14 @@ import subprocess
 import sys
 
 FSCK = "./fsck_femtofs"
-SRC = "test_subdir.img"
+SRC = "test_subdir.0fs"
 
 def load():
     with open(SRC, "rb") as f:
         return bytearray(f.read())
 
 def run(name, data):
-    path = f"/tmp/corrupt_{name}.img"
+    path = f"/tmp/corrupt_{name}.0fs"
     with open(path, "wb") as f:
         f.write(data)
     r = subprocess.run([FSCK, path], capture_output=True, text=True)

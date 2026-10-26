@@ -47,6 +47,11 @@ def pack_dir_realsize(parent, n):
     return (parent & 0xFFFF) | ((n & 0x7FFF) << 16)
 
 
+def pack_bucket_word2(name, next_index):
+    """Bucket bytes 12..15: reserved (u8 = 0), name_len (u8), next_index (u16)."""
+    return (len(name) << 8) | (next_index << 16)
+
+
 def blob(b):
     b = b + b"\x00"
     b += b"\x00" * ((-len(b)) % 4)
@@ -77,11 +82,11 @@ def femtofs_hash(name: bytes, p: int, tablesize: int) -> int:
 
 def place_directory_entries(entries, tablesize, p1):
     """entries: list of (name: bytes, target_cell_idx: int).
-    Returns {rel_index: [name, target, realsize]} using single-hash open
-    chaining exactly as the reference lookup algorithm expects: an
-    entry's anchor slot holds it directly if free; otherwise it is
+    Returns {rel_index: [name, target, next_index]} using single-hash
+    coalesced chaining exactly as the reference lookup algorithm expects:
+    an entry's anchor slot holds it directly if free; otherwise it is
     appended to the anchor's chain via the first free slot found, and the
-    previous chain tail's realsize is updated to link to it."""
+    previous chain tail's next_index is updated to link to it."""
     slots = {}
     for name, target in entries:
         anchor = femtofs_hash(name, p1, tablesize)
@@ -141,7 +146,8 @@ def build():
     p1 = SMALL_PRIMES[0]
     placed = place_directory_entries([(filename, 3)], tablesize, p1)
     bucket_first = 2
-    cells[2] = obj_cell(TYPE_FILE, 0, 0, placed[0][1], name_off, placed[0][2])
+    cells[2] = obj_cell(TYPE_FILE, 0, 0, placed[0][1], name_off,
+                        pack_bucket_word2(filename, placed[0][2]))
     cells[3] = obj_cell(TYPE_FILE, 0, file_attr_idx, data_off, len(payload), 0)
 
     meta_bytes = b"".join(cells)
@@ -218,15 +224,16 @@ def build_with_subdir():
         [(b"hello.txt", 4), (b"sub", 6)], root_tablesize, p1)
     root_bucket_first = 2
     for rel in range(root_tablesize):
-        name, target, realsize = root_placed[rel]
+        name, target, next_index = root_placed[rel]
         cells[root_bucket_first + rel] = obj_cell(
             TYPE_FILE if target == 4 else TYPE_DIR, 0, 0,
-            target, offs[("name", name)], realsize)
+            target, offs[("name", name)], pack_bucket_word2(name, next_index))
 
     sub_tablesize = 1
     sub_placed = place_directory_entries([(b"inner.txt", 7)], sub_tablesize, p1)
     cells[5] = obj_cell(TYPE_FILE, 0, 0, sub_placed[0][1],
-                         offs[("name", b"inner.txt")], sub_placed[0][2])
+                         offs[("name", b"inner.txt")],
+                         pack_bucket_word2(b"inner.txt", sub_placed[0][2]))
 
     cells[4] = obj_cell(TYPE_FILE, 0, file_attr_idx,
                          offs[("data", b"hello.txt")], len(payloads[b"hello.txt"]), 0)
@@ -258,7 +265,7 @@ def build_with_subdir():
 if __name__ == "__main__":
     import sys
     which = sys.argv[1] if len(sys.argv) > 1 else "flat"
-    out = sys.argv[2] if len(sys.argv) > 2 else f"test_{which}.img"
+    out = sys.argv[2] if len(sys.argv) > 2 else f"test_{which}.0fs"
     data = build_with_subdir() if which == "subdir" else build()
     with open(out, "wb") as f:
         f.write(data)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Corrupts test_subdir.img in specific, targeted ways and checks that
+"""Corrupts test_subdir.0fs in specific, targeted ways and checks that
 fsck_femtofs (a) flags an error and (b) exits nonzero, i.e. doesn't
 silently accept broken images. Each case is a single-byte or small edit
 chosen to hit one specific normative rule.
@@ -9,14 +9,14 @@ import subprocess
 import sys
 
 FSCK = "./fsck_femtofs"
-SRC = "test_subdir.img"
+SRC = "test_subdir.0fs"
 
 def load():
     with open(SRC, "rb") as f:
         return bytearray(f.read())
 
 def run(name, data):
-    path = f"/tmp/corrupt_{name}.img"
+    path = f"/tmp/corrupt_{name}.0fs"
     with open(path, "wb") as f:
         f.write(data)
     r = subprocess.run([FSCK, path], capture_output=True, text=True)
@@ -111,13 +111,6 @@ def _(d):
     hello_off = d.find(b"hello.txt")
     off = 128 + 3 * 16  # cell 3 = root bucket slot 1 ("sub" -> DIR)
     struct.pack_into("<I", d, off + 8, hello_off)  # w1 = name_off
-    return d
-
-@case("empty_bucket_bad_sentinel")
-def _(d):
-    # No empty buckets exist in this tiny image (root tablesize==N==2,
-    # sub tablesize==N==1) -- skip meaningful mutation, just prove a
-    # non-existent-cell edit doesn't crash: corrupt padding instead.
     return d
 
 @case("nonzero_hole_byte")
