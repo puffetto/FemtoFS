@@ -205,7 +205,8 @@ for path in ('private', 'hidden/promoted'):
                 expected_file = base / 'expected'
                 expected_file.write_bytes(expected)
                 for relative in range(0, size, page):
-                    if (off + relative) % page or (relative + page > size and not leaking):
+                    # A partial page has one managed cache owner, even with permitted public spill.
+                    if (off + relative) % page or relative + page > size:
                         copied_sources.add(off + relative)
                 run(probe, mountpoint/name, expected_file, mountpoint)
             copied_after = int(subprocess.check_output(['sysctl', '-n', 'vfs.femtofs.clean_pages']))

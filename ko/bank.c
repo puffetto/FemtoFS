@@ -19,9 +19,14 @@
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/uio.h>
+#include <sys/vmmeter.h>
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 #include <vm/pmap.h>
+#include <vm/vm_object.h>
+#include <vm/vm_page.h>
+#include <vm/vm_pager.h>
+#include <vm/vm_phys.h>
 #include <machine/atomic.h>
 #include "bank.h"
 
@@ -103,6 +108,98 @@ void ff_bank_release(struct ff_bank *b)
     sx_xunlock(&bank_lock);
 }
 
+/* Borrowers return every image page before releasing the mount claim. */
+static void free_memory(struct ff_bank *b)
+{
+    if (!b->preload && b->image.bytes) {
+        if (b->mapped) pmap_qremove((vm_offset_t)b->image.bytes, b->extent / PAGE_SIZE);
+        kva_free((vm_offset_t)b->image.bytes, b->extent);
+        b->image.bytes = NULL;
+    }
+    if (b->object) {
+        VM_OBJECT_WLOCK(b->object);
+        for (size_t i = 0; i < b->owned; i++) {
+            vm_page_t m = b->pages[i];
+            KASSERT(m->object == b->object || m->object == NULL,
+                ("FemtoFS bank page still borrowed"));
+            vm_page_busy_acquire(m, 0);
+            if (m->object) vm_page_remove_xbusy(m);
+            vm_page_unwire_noq(m);
+            if (b->preload) {
+                /* Restore the reserved bootstrap state for preload_delete_name. */
+                m->valid = m->dirty = 0;
+                m->a.flags = 0;
+                m->oflags = b->loader_oflags[i];
+                m->busy_lock = VPB_FREED;
+                vm_cnt.v_page_count--;
+            } else vm_page_free(m);
+        }
+        VM_OBJECT_WUNLOCK(b->object);
+        vm_object_deallocate(b->object);
+        b->object = NULL;
+    }
+    free(b->pages, M_FFBANK);
+    free(b->loader_oflags, M_FFBANK);
+    b->loader_oflags = NULL;
+    b->pages = NULL; b->owned = 0;
+}
+
+static int managed_memory(struct ff_bank *b)
+{
+    size_t count = b->extent / PAGE_SIZE;
+    vm_page_t m;
+    int error = 0;
+    /* Reserved loader pages have initialized descriptors but are not free RAM. */
+    if (b->preload) for (size_t i = 0; i < count; i++) {
+        m = vm_phys_paddr_to_vm_page(pmap_kextract((vm_offset_t)b->image.bytes + i * PAGE_SIZE));
+        if (!m || m->object || m->ref_count || m->busy_lock != VPB_FREED ||
+            (m->flags & PG_FICTITIOUS)) return EOPNOTSUPP;
+    }
+    b->pages = malloc(count * sizeof(*b->pages), M_FFBANK, M_NOWAIT | M_ZERO);
+    if (!b->pages) return ENOMEM;
+    if (b->preload) {
+        b->loader_oflags = malloc(count, M_FFBANK, M_NOWAIT);
+        if (!b->loader_oflags) return ENOMEM;
+    }
+    b->object = vm_object_allocate(OBJT_PHYS, count);
+    VM_OBJECT_WLOCK(b->object);
+    vm_object_clear_flag(b->object, OBJ_UNMANAGED);
+    b->object->un_pager.phys.ops = &default_phys_pg_ops;
+    if (!b->preload) {
+        b->image.bytes = (void *)kva_alloc(b->extent);
+        if (!b->image.bytes) error = ENOMEM;
+    }
+    for (size_t i = 0; !error && i < count; i++) {
+        if (b->preload) {
+            m = PHYS_TO_VM_PAGE(pmap_kextract((vm_offset_t)b->image.bytes + i * PAGE_SIZE));
+            b->loader_oflags[i] = m->oflags;
+            /* As in the ordinary allocator, the new owner determines managed state. */
+            m->oflags = 0;
+            m->flags &= ~PG_ZERO;
+            m->busy_lock = VPB_UNBUSIED;
+            vm_page_busy_acquire(m, 0);
+            vm_page_wire(m);
+            vm_cnt.v_page_count++;
+            b->pages[b->owned++] = m;
+            if (vm_page_insert(m, b->object, i)) { vm_page_xunbusy(m); error = ENOMEM; break; }
+        } else {
+            m = vm_page_alloc(b->object, i, VM_ALLOC_NORMAL | VM_ALLOC_WIRED);
+            if (!m) { error = ENOMEM; break; }
+            b->pages[b->owned++] = m;
+        }
+        vm_page_valid(m);
+        vm_page_xunbusy(m);
+    }
+    VM_OBJECT_WUNLOCK(b->object);
+    if (!error && !b->preload) {
+        pmap_qenter((vm_offset_t)b->image.bytes, b->pages, count);
+        b->mapped = 1;
+        memset(__DECONST(void *, b->image.bytes), 0, b->extent);
+    }
+    if (error) free_memory(b);
+    return error;
+}
+
 static int read_image(struct file *fp, void *buffer, size_t size, off_t off,
     struct thread *td)
 {
@@ -151,15 +248,15 @@ static int import(struct ff_bank_request *r, struct thread *td)
     free(header, M_FFBANK);
     if (error) goto fail;
     b->extent = round_page(b->image.size);
-    b->image.bytes = kmem_malloc(b->extent, M_NOWAIT | M_ZERO);
-    if (!b->image.bytes) { error = ENOMEM; goto fail; }
+    error = managed_memory(b);
+    if (error) goto fail;
     error = read_image(fp, __DECONST(uint8_t *, b->image.bytes), b->image.size, 0, td);
     if (!error) error = ff_validate(&b->image);
     if (!error) error = publish(b);
     if (!error) goto close;
 fail:
     ff_destroy(&b->image);
-    if (b->image.bytes) kmem_free(__DECONST(uint8_t *, b->image.bytes), b->extent);
+    free_memory(b);
     free(b, M_FFBANK);
 close:
     fdrop(fp, td);
@@ -224,11 +321,12 @@ static int bank_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int flags,
             }
             /* Serialize preload metadata deletion as well as bank removal. */
             ff_destroy(&b->image);
+            free_memory(b);
             if (b->preload) {
                 preload_delete_name(b->source);
                 atomic_add_long(&loader_released_pages, b->extent / PAGE_SIZE);
                 if (bootverbose) printf("femtofs: discarded preload %s %zu pages\n", b->label, b->extent / PAGE_SIZE);
-            } else kmem_free(__DECONST(uint8_t *, b->image.bytes), b->extent);
+            }
             free(b, M_FFBANK);
         }
     } else {
@@ -287,8 +385,9 @@ static int adopt(const char *label, const char *name)
     strlcpy(b->label, label, sizeof(b->label)); strlcpy(b->source, name, sizeof(b->source));
     error = ff_header(base, extent, &b->image);
     if (!error) { b->image.bytes = base; error = ff_validate(&b->image); }
+    if (!error) error = managed_memory(b);
     if (!error) error = publish(b);
-    if (error) { ff_destroy(&b->image); free(b, M_FFBANK); }
+    if (error) { ff_destroy(&b->image); free_memory(b); free(b, M_FFBANK); }
     else if (bootverbose) printf("femtofs: preload %s <%s> %zu bytes at %p\n", label, name, extent, base);
     return error;
 }

@@ -22,11 +22,17 @@ _Static_assert(sizeof(struct ff_bank_request) == 1152, "stable bank ioctl ABI");
 #define FF_BANK_LIST _IOWR('F', 2, struct ff_bank_request)
 #define FF_BANK_DISCARD _IOW('F', 3, struct ff_bank_request)
 #ifdef _KERNEL
+#include <vm/vm.h>
 #include "image.h"
 struct ff_bank {
     struct ff_bank *next;
     struct ff_image image;
     size_t extent;
+    vm_object_t object;
+    vm_page_t *pages;
+    uint8_t *loader_oflags;
+    size_t owned;
+    int mapped;
     int claimed, preload;
     u_int sampled;
     char label[FF_LABEL_SIZE], source[1024];

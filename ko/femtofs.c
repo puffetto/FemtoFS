@@ -32,6 +32,7 @@
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
 #include <vm/vm_pager.h>
+#include <vm/vm_radix.h>
 #include <vm/vnode_pager.h>
 #include <security/mac/mac_framework.h>
 #include <machine/atomic.h>
@@ -44,6 +45,7 @@
 static MALLOC_DEFINE(M_FEMTOFS, "femtofs", "femtofs mount and vnode data");
 static u_long ff_direct_faults, ff_clean_pages;
 static u_long ff_clean_bytes, ff_loader_faults;
+static int ff_pager_type = -1;
 SYSCTL_NODE(_vfs, OID_AUTO, femtofs, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "femtofs pager");
 SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, direct_faults, CTLFLAG_RD, &ff_direct_faults, 0,
     "Faults resolved by aliasing immutable image pages");
@@ -56,10 +58,12 @@ SYSCTL_ULONG(_vfs_femtofs, OID_AUTO, loader_faults, CTLFLAG_RD, &ff_loader_fault
 struct ff_mount {
     struct ff_bank *bank;
     struct sx cache_lock;
-    vm_offset_t **clean; /* Per stored blob, indexed by file-relative page. */
-    int leaking;
+    vm_page_t **clean; /* Wired managed pages; one cache per stored blob. */
+    vm_object_t *objects;
+    int leaking, draining;
 };
 struct ff_vnode { struct vnode *vp; struct ff_mount *fs; uint32_t id; };
+struct ff_mapping { struct vnode *vp; uint32_t id; };
 #define FN(vp) ((struct ff_vnode *)(vp)->v_data)
 #define NODE(vp) (&FN(vp)->fs->bank->image.nodes[FN(vp)->id])
 static struct vop_vector ff_vops, ff_fifoops;
@@ -229,70 +233,188 @@ static int ff_getpages_async(struct vop_getpages_async_args *ap)
     return error;
 }
 
-/* Pager references retain the vnode, image backing, and cached clean pages. */
-static int ff_pager_ctor(void *handle, vm_ooffset_t size, vm_prot_t prot,
-    vm_ooffset_t off, struct ucred *cred, u_short *color)
+/* The bank wire reference survives transfers between the two managed objects. */
+static void ff_return_page(struct ff_mount *fs, uint32_t id, vm_pindex_t offset, vm_page_t page)
 {
-    struct ff_vnode *n = handle;
-    (void)size; (void)off; (void)cred;
-    if (prot & VM_PROT_WRITE) return EACCES;
-    vref(n->vp); *color = 0;
-    return 0;
-}
-static void ff_pager_dtor(void *handle) { vrele(((struct ff_vnode *)handle)->vp); }
-static int ff_fault(vm_object_t object, vm_ooffset_t offset, int prot, vm_page_t *mres)
-{
-    struct ff_vnode *vn = object->handle;
-    struct ff_mount *fs = vn->fs;
-    struct ff_node *n = &fs->bank->image.nodes[vn->id];
-    uint32_t source, copied;
-    int leaking;
-    vm_offset_t address;
-    vm_page_t page;
-    (void)prot;
-    leaking = fs->leaking && !mac_vnode_check_access_enabled() &&
-        !mac_vnode_check_lookup_enabled() && !mac_vnode_check_open_enabled() &&
-        !mac_vnode_check_mmap_enabled();
-    if (ff_page(&fs->bank->image, vn->id, offset, PAGE_SIZE, leaking,
-        &source, &copied)) return VM_PAGER_BAD;
-    VM_OBJECT_WUNLOCK(object);
-    address = (vm_offset_t)fs->bank->image.bytes + source;
-    if (copied) {
-        uint32_t index = offset / PAGE_SIZE;
-        sx_xlock(&fs->cache_lock);
-        if (!fs->clean[n->blob]) fs->clean[n->blob] = malloc(
-            (size_t)howmany(n->size, PAGE_SIZE) * sizeof(vm_offset_t), M_FEMTOFS, M_WAITOK | M_ZERO);
-        if (!fs->clean[n->blob][index]) {
-            fs->clean[n->blob][index] = (vm_offset_t)kmem_malloc(PAGE_SIZE, M_WAITOK | M_ZERO);
-            memcpy((void *)fs->clean[n->blob][index], (void *)address, copied);
-            atomic_add_long(&ff_clean_pages, 1);
-            atomic_add_long(&ff_clean_bytes, PAGE_SIZE);
-        }
-        address = fs->clean[n->blob][index];
-        sx_xunlock(&fs->cache_lock);
-    } else {
-        atomic_add_long(&ff_direct_faults, 1);
-        if (fs->bank->preload) atomic_add_long(&ff_loader_faults, 1);
+    vm_object_t bank = fs->bank->object;
+    struct ff_node *n = &fs->bank->image.nodes[id];
+    vm_pindex_t index = OFF_TO_IDX(n->off) + offset;
+    if (fs->clean[n->blob] && fs->clean[n->blob][offset] == page) return;
+    KASSERT(index < fs->bank->owned && fs->bank->pages[index] == page,
+        ("FemtoFS page does not belong to its image range"));
+    VM_OBJECT_WLOCK(bank);
+    while (vm_page_insert(page, bank, index)) {
+        VM_OBJECT_WUNLOCK(bank);
+        vm_radix_wait();
+        VM_OBJECT_WLOCK(bank);
     }
-    page = vm_page_getfake(pmap_kextract(address), VM_MEMATTR_DEFAULT);
-    if (!copied && bootverbose && atomic_cmpset_int(&fs->bank->sampled, 0, 1))
-        printf("femtofs: page %s offset %u physical %#jx\n", fs->bank->label,
-            source, (uintmax_t)VM_PAGE_TO_PHYS(page));
-    VM_OBJECT_WLOCK(object);
-    vm_page_replace(page, object, (*mres)->pindex, *mres);
-    *mres = page;
-    vm_page_valid(page);
-    return VM_PAGER_OK;
+    VM_OBJECT_WUNLOCK(bank);
 }
-static const struct cdev_pager_ops ff_pager = {
-    .cdev_pg_ctor = ff_pager_ctor, .cdev_pg_dtor = ff_pager_dtor, .cdev_pg_fault = ff_fault
+
+static void ff_pager_destroy(vm_object_t object)
+{
+    struct ff_mapping *mapping = object->handle;
+    struct ff_mount *fs = FN(mapping->vp)->fs;
+    uint32_t blob = fs->bank->image.nodes[mapping->id].blob;
+    vm_page_t page;
+    /* All paths take cache_lock before object: never wait for it with object held. */
+    VM_OBJECT_WUNLOCK(object);
+    sx_xlock(&fs->cache_lock);
+    VM_OBJECT_WLOCK(object);
+    while ((page = vm_radix_lookup_ge(&object->rtree, 0)) != NULL) {
+        vm_pindex_t index = page->pindex;
+        vm_page_busy_acquire(page, 0);
+        pmap_remove_all(page);
+        vm_page_remove_xbusy(page);
+        ff_return_page(fs, mapping->id, index, page);
+        vm_page_xunbusy(page);
+    }
+    fs->objects[blob] = NULL;
+    object->type = OBJT_DEAD;
+    VM_OBJECT_WUNLOCK(object);
+    sx_xunlock(&fs->cache_lock);
+    vrele(mapping->vp);
+    free(mapping, M_FEMTOFS);
+    VM_OBJECT_WLOCK(object);
+}
+
+static boolean_t ff_pager_haspage(vm_object_t object, vm_pindex_t index, int *before, int *after)
+{
+    if (before) *before = MIN(index, 4);
+    if (after) *after = index < object->size ? MIN(object->size - index - 1, 4) : 0;
+    return index < object->size;
+}
+
+/* A longer-lived managed cache must not retain public spill for new MAC checks. */
+static void ff_mac_clean(struct ff_mount *fs)
+{
+    sx_assert(&fs->cache_lock, SA_XLOCKED);
+    if (!fs->leaking || (!mac_vnode_check_access_enabled() &&
+        !mac_vnode_check_lookup_enabled() && !mac_vnode_check_open_enabled() &&
+        !mac_vnode_check_mmap_enabled())) return;
+    fs->leaking = 0; /* Conservatively retain clean behavior until unmount. */
+    for (uint32_t i = 0; i < fs->bank->image.nblobs; i++) {
+        size_t size = fs->bank->image.blobs[i].size, tail = size % PAGE_SIZE;
+        vm_page_t page;
+        vm_object_t object;
+        void *address;
+        if (!tail || !fs->clean[i] || !(page = fs->clean[i][size / PAGE_SIZE])) continue;
+        object = page->object;
+        if (object) VM_OBJECT_WLOCK(object);
+        vm_page_busy_acquire(page, 0);
+        address = (void *)pmap_quick_enter_page(page);
+        memset((char *)address + tail, 0, PAGE_SIZE - tail);
+        pmap_quick_remove_page((vm_offset_t)address);
+        vm_page_xunbusy(page);
+        if (object) VM_OBJECT_WUNLOCK(object);
+    }
+}
+
+static int ff_pager_getpages(vm_object_t object, vm_page_t *pages, int count,
+    int *behind, int *ahead)
+{
+    struct ff_mapping *mapping = object->handle;
+    struct ff_mount *fs = FN(mapping->vp)->fs;
+    struct ff_node *n = &fs->bank->image.nodes[mapping->id];
+    vm_pindex_t first = pages[0]->pindex;
+    uint32_t source, copied;
+    int error = VM_PAGER_OK;
+    if (behind) *behind = 0;
+    if (ahead) *ahead = 0;
+    sx_xlock(&fs->cache_lock);
+    ff_mac_clean(fs);
+    VM_OBJECT_WLOCK(object);
+    for (int i = 0; i < count; i++) {
+        vm_pindex_t index = first + i;
+        vm_page_t page;
+        int leaking = fs->leaking && !mac_vnode_check_access_enabled() &&
+            !mac_vnode_check_lookup_enabled() && !mac_vnode_check_open_enabled() &&
+            !mac_vnode_check_mmap_enabled();
+        if (ff_page(&fs->bank->image, mapping->id, IDX_TO_OFF(index), PAGE_SIZE,
+            leaking, &source, &copied)) { error = VM_PAGER_BAD; break; }
+        /* A partial public page may also back another blob: keep one managed owner. */
+        if (!copied && IDX_TO_OFF(index + 1) > n->size) copied = PAGE_SIZE;
+        if (copied) {
+            if (!fs->clean[n->blob]) fs->clean[n->blob] = malloc(
+                (size_t)howmany(n->size, PAGE_SIZE) * sizeof(vm_page_t), M_FEMTOFS, M_WAITOK | M_ZERO);
+            page = fs->clean[n->blob][index];
+            if (!page) {
+                void *address;
+                page = vm_page_alloc_noobj(VM_ALLOC_WIRED | VM_ALLOC_WAITOK);
+                page->oflags &= ~VPO_UNMANAGED;
+                pmap_zero_page(page);
+                address = (void *)pmap_quick_enter_page(page);
+                memcpy(address, fs->bank->image.bytes + source, copied);
+                pmap_quick_remove_page((vm_offset_t)address);
+                fs->clean[n->blob][index] = page;
+                atomic_add_long(&ff_clean_pages, 1);
+                atomic_add_long(&ff_clean_bytes, PAGE_SIZE);
+            }
+            vm_page_busy_acquire(page, 0);
+        } else {
+            vm_object_t bank = fs->bank->object;
+            VM_OBJECT_WLOCK(bank);
+            page = vm_page_lookup(bank, source / PAGE_SIZE);
+            KASSERT(page != NULL, ("FemtoFS image page has another owner"));
+            vm_page_busy_acquire(page, 0);
+            vm_page_remove_xbusy(page);
+            VM_OBJECT_WUNLOCK(bank);
+            atomic_add_long(&ff_direct_faults, 1);
+            if (fs->bank->preload) atomic_add_long(&ff_loader_faults, 1);
+            if (bootverbose && atomic_cmpset_int(&fs->bank->sampled, 0, 1))
+                printf("femtofs: page %s offset %u physical %#jx\n", fs->bank->label,
+                    source, (uintmax_t)VM_PAGE_TO_PHYS(page));
+        }
+        vm_page_replace(page, object, index, pages[i]);
+        vm_page_valid(page);
+        pages[i] = page;
+    }
+    VM_OBJECT_WUNLOCK(object);
+    sx_xunlock(&fs->cache_lock);
+    return error;
+}
+
+static struct pagerops ff_pager_ops = {
+    .pgo_dealloc = ff_pager_destroy, .pgo_getpages = ff_pager_getpages,
+    .pgo_haspage = ff_pager_haspage
 };
+
+static vm_object_t ff_mapping_object(struct vnode *vp)
+{
+    struct ff_mount *fs = FN(vp)->fs;
+    struct ff_node *n = NODE(vp);
+    vm_object_t object;
+    sx_xlock(&fs->cache_lock);
+    if (fs->draining) { sx_xunlock(&fs->cache_lock); return NULL; }
+    ff_mac_clean(fs);
+    object = fs->objects[n->blob];
+    if (object) {
+        VM_OBJECT_WLOCK(object);
+        vm_object_reference_locked(object);
+        VM_OBJECT_WUNLOCK(object);
+    } else {
+        struct ff_mapping *mapping = malloc(sizeof(*mapping), M_FEMTOFS, M_WAITOK);
+        mapping->vp = vp; mapping->id = FN(vp)->id; vref(vp);
+        object = vm_object_allocate(OBJT_PHYS, howmany(n->size, PAGE_SIZE));
+        VM_OBJECT_WLOCK(object);
+        object->type = ff_pager_type;
+        vm_object_clear_flag(object, OBJ_UNMANAGED);
+        vm_object_set_flag(object, OBJ_PG_DTOR);
+        object->handle = mapping;
+        /* The mount retains the managed file cache across process exits. */
+        vm_object_reference_locked(object);
+        VM_OBJECT_WUNLOCK(object);
+        fs->objects[n->blob] = object;
+    }
+    sx_xunlock(&fs->cache_lock);
+    return object;
+}
 
 static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t size,
     vm_prot_t prot, vm_prot_t capmax, int flags, vm_ooffset_t off, struct thread *td)
 {
     struct vnode *vp = fp->f_vnode;
-    vm_object_t obj, backing;
+    vm_object_t obj;
     vm_prot_t maxprot = VM_PROT_READ | VM_PROT_EXECUTE;
     int error;
     /* A stacking filesystem leaves its vnode in f_vnode after forwarding
@@ -313,24 +435,10 @@ static int ff_mmap(struct file *fp, vm_map_t map, vm_offset_t *addr, vm_size_t s
     if (prot & ~maxprot) { vput(vp); return EACCES; }
     error = mac_vnode_check_mmap(td->td_ucred, vp, prot, flags);
     if (error) { vput(vp); return error; }
-    /* The pager supplies immutable source pages; only VM shadow pages are writable. */
-    backing = cdev_pager_allocate(FN(vp), OBJT_DEVICE, &ff_pager, size,
-        prot & ~VM_PROT_WRITE, off, td->td_ucred);
+    obj = ff_mapping_object(vp);
     vput(vp);
-    if (!backing) return ENOMEM;
-    /* Device superpage prefaults can install writable PTEs even for read-only
-     * or COW entries. An immutable, non-anonymous view forces ordinary faults
-     * through the backing pager; private writes get a separate charged shadow. */
-    obj = vm_object_allocate(OBJT_SWAP, OFF_TO_IDX(size));
-    VM_OBJECT_WLOCK(obj);
-    obj->backing_object_offset = off;
-    /* Mirror vm_object_backing_insert() in FreeBSD 15.1 vm_object.c (static):
-     * transfer the device reference; non-anonymous backings have no shadow list.
-     * Recheck this invariant when updating the supported kernel. */
-    obj->backing_object = backing;
-    atomic_add_int((volatile u_int *)&backing->shadow_count, 1);
-    VM_OBJECT_WUNLOCK(obj);
-    error = vm_mmap_object(map, addr, size, prot, maxprot, flags, obj, 0, FALSE, td);
+    if (!obj) return EBUSY;
+    error = vm_mmap_object(map, addr, size, prot, maxprot, flags, obj, off, FALSE, td);
     if (error) vm_object_deallocate(obj);
     return error;
 }
@@ -384,13 +492,17 @@ static void ff_free(struct ff_mount *fs)
         for (i = 0; i < fs->bank->image.nblobs; i++) if (fs->clean[i]) {
             for (j = 0; j < howmany(fs->bank->image.blobs[i].size, PAGE_SIZE); j++)
                 if (fs->clean[i][j]) {
-                    kmem_free((void *)fs->clean[i][j], PAGE_SIZE);
+                    vm_page_t page = fs->clean[i][j];
+                    KASSERT(page->object == NULL, ("FemtoFS clean page still mapped"));
+                    vm_page_unwire_noq(page);
+                    vm_page_free(page);
                     atomic_subtract_long(&ff_clean_bytes, PAGE_SIZE);
                 }
             free(fs->clean[i], M_FEMTOFS);
         }
         free(fs->clean, M_FEMTOFS);
     }
+    free(fs->objects, M_FEMTOFS);
     ff_bank_release(fs->bank);
     sx_destroy(&fs->cache_lock);
     free(fs, M_FEMTOFS);
@@ -446,6 +558,7 @@ static int ff_mount(struct mount *mp)
     if (mac_vnode_check_access_enabled() || mac_vnode_check_lookup_enabled() ||
         mac_vnode_check_open_enabled() || mac_vnode_check_mmap_enabled()) fs->leaking = 0;
     fs->clean = malloc((size_t)bank->image.nblobs * sizeof(*fs->clean), M_FEMTOFS, M_WAITOK | M_ZERO);
+    fs->objects = malloc((size_t)bank->image.nblobs * sizeof(*fs->objects), M_FEMTOFS, M_WAITOK | M_ZERO);
     mp->mnt_data = fs;
     MNT_ILOCK(mp);
     mp->mnt_flag |= MNT_RDONLY | MNT_LOCAL;
@@ -458,18 +571,48 @@ static int ff_mount(struct mount *mp)
 }
 static int ff_unmount(struct mount *mp, int flags)
 {
+    struct ff_mount *fs = mp->mnt_data;
     int error;
-    /* Forced reclaim could leave device-pager handles pointing at dead vnodes. */
+    /* Forced reclaim could leave mapped pager handles pointing at dead vnodes. */
     if (flags & MNT_FORCE) return EOPNOTSUPP;
+    sx_xlock(&fs->cache_lock);
+    for (uint32_t i = 0; i < fs->bank->image.nblobs; i++) if (fs->objects[i]) {
+        VM_OBJECT_RLOCK(fs->objects[i]);
+        int active = fs->objects[i]->ref_count != 1;
+        VM_OBJECT_RUNLOCK(fs->objects[i]);
+        if (active) { sx_xunlock(&fs->cache_lock); return EBUSY; }
+    }
+    fs->draining = 1;
+    sx_xunlock(&fs->cache_lock);
+    for (uint32_t i = 0; i < fs->bank->image.nblobs; i++)
+        if (fs->objects[i]) vm_object_deallocate(fs->objects[i]);
     error = vflush(mp, 0, 0, curthread);
-    if (error) return error;
+    if (error) {
+        sx_xlock(&fs->cache_lock); fs->draining = 0; sx_xunlock(&fs->cache_lock);
+        return error;
+    }
     ff_free(mp->mnt_data); mp->mnt_data = NULL;
     return 0;
 }
 static int ff_init(struct vfsconf *vfc)
-{ (void)vfc; ff_fileops = vnops; ff_fileops.fo_mmap = ff_mmap; return ff_banks_init(); }
+{
+    int error;
+    (void)vfc;
+    ff_pager_type = vm_pager_alloc_dyn_type(&ff_pager_ops, OBJT_PHYS);
+    if (ff_pager_type < 0) return ENOSPC;
+    ff_fileops = vnops; ff_fileops.fo_mmap = ff_mmap;
+    error = ff_banks_init();
+    if (error) vm_pager_free_dyn_type(ff_pager_type);
+    return error;
+}
 static int ff_uninit(struct vfsconf *vfc)
-{ (void)vfc; return ff_banks_uninit(); }
+{
+    int error;
+    (void)vfc;
+    error = ff_banks_uninit();
+    if (!error) vm_pager_free_dyn_type(ff_pager_type);
+    return error;
+}
 static struct vfsops ff_vfsops = {
     .vfs_init = ff_init, .vfs_uninit = ff_uninit, .vfs_mount = ff_mount, .vfs_unmount = ff_unmount,
     .vfs_root = ff_root, .vfs_statfs = ff_statfs, .vfs_vget = ff_vget
