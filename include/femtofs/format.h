@@ -1,6 +1,6 @@
 // File: include/femtofs/format.h
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Shared FemtoFS version 0x0100 on-disk definitions and encoding helpers.
+// Shared FemtoFS version 0x0101 on-disk definitions and encoding helpers.
 
 #pragma once
 
@@ -18,7 +18,8 @@ inline constexpr uint32_t kCellSize = 16;
 inline constexpr uint32_t kMaxCellCount = 65535;
 inline constexpr uint32_t kMaxTableSize = 65521;
 inline constexpr uint32_t kMaxDirectoryEntries = 1u << 15;
-inline constexpr uint16_t kVersion = 0x0100;
+inline constexpr uint64_t kLeapEpoch = 1483228800ULL;
+inline constexpr uint16_t kVersion = 0x0101;
 inline constexpr uint32_t kFnv1Init = 0x811c9dc5u;
 inline constexpr uint32_t kFnv1Prime = 0x01000193u;
 
@@ -64,7 +65,9 @@ struct HeaderLayout {
     uint8_t rootP;
     uint8_t rootPad;
     uint32_t hash2Base;
-    uint8_t author[56];
+    uint32_t creationTime; // Seconds since the leap epoch, 2017-01-01 UTC.
+    uint8_t padding[2];
+    uint8_t author[50];
 };
 
 union ObjectRoleLayout {
@@ -116,6 +119,8 @@ struct AttrLayout {
 static_assert(sizeof(HeaderLayout) == kHeaderSize);
 static_assert(offsetof(HeaderLayout, uuid) == 16);
 static_assert(offsetof(HeaderLayout, imageSize) == 32);
+static_assert(offsetof(HeaderLayout, creationTime) == 72);
+static_assert(offsetof(HeaderLayout, author) == 78);
 static_assert(sizeof(ObjectRoleLayout) == 12);
 static_assert(sizeof(ObjectLayout) == kCellSize);
 static_assert(offsetof(ObjectLayout, role.bucket.reserved) == 12);

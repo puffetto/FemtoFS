@@ -11,11 +11,13 @@
 
 #include <femtofs/format.h>
 
-TEST_CASE("version 0x0100 structures have the specified ABI", "[format]")
+TEST_CASE("version 0x0101 structures have the specified ABI", "[format]")
 {
     STATIC_REQUIRE(sizeof(femtofs::HeaderLayout) == 128);
     STATIC_REQUIRE(offsetof(femtofs::HeaderLayout, uuid) == 16);
     STATIC_REQUIRE(offsetof(femtofs::HeaderLayout, imageSize) == 32);
+    STATIC_REQUIRE(offsetof(femtofs::HeaderLayout, creationTime) == 72);
+    STATIC_REQUIRE(offsetof(femtofs::HeaderLayout, author) == 78);
     STATIC_REQUIRE(sizeof(femtofs::ObjectRoleLayout) == 12);
     STATIC_REQUIRE(sizeof(femtofs::ObjectLayout) == 16);
     STATIC_REQUIRE(sizeof(femtofs::AttrLayout) == 16);

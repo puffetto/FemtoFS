@@ -1,2 +1,4 @@
 fsck_femtofs
 test_*.0fs
+corrupt_*.0fs
+__pycache__/

@@ -99,14 +99,42 @@ class Images(unittest.TestCase):
         b[6] = 7
         self.check(b, valid=True)
 
+    def test_leap_epoch_and_reserved_header(self):
+        for revision, stored, expected in ((0, 0, 0), (1, 0, 1483228800),
+                                            (1, 0xffffffff, 5778196095), (7, 42, 1483228842)):
+            b = bytearray(self.good)
+            b[6] = revision
+            put(b, 72, stored)
+            for off in (67, 76, 77, 78, 127):
+                b[off] = 0xff
+            rehash(b)
+            p = self.base / 'timestamp.0fs'
+            p.write_bytes(b)
+            result = subprocess.run([CHECK, str(p)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f'creation_time={expected}\n', result.stdout)
+
     def test_headers(self):
-        for off, value in ((0, 1), (4, 1), (5, 3), (7, 2), (67, 1), (72, 0), (127, 1)):
+        for off, value in ((0, 1), (4, 1), (5, 3), (7, 2)):
             with self.subTest(off=off):
                 b = bytearray(self.good); b[off] = value; self.check(b)
         for off, value in ((32, 0xffffffff), (36, 65536), (40, 128), (44, 1),
                            (48, 0), (52, 65536), (56, 65522), (60, 32768)):
             with self.subTest(off=off):
                 b = bytearray(self.good); put(b, off, value); self.check(b)
+
+    def test_reserved_metadata_is_ignored(self):
+        for name, delta, value in (('file-4097', 12, 0xdeadbeef),
+                                   ('fifo', 4, 0xdeadbeef), ('fifo', 8, 99),
+                                   ('hidden', 12, u32(self.good, self.objects['hidden'] + 12) | 0x80000000)):
+            b = bytearray(self.good)
+            put(b, self.objects[name] + delta, value)
+            self.check(b, valid=True)
+        obj = self.objects['private']
+        attr = 128 + 16 * struct.unpack_from('<H', self.good, obj+2)[0]
+        b = bytearray(self.good)
+        b[attr+1] = 0xff
+        self.check(b, valid=True)
 
     def test_truncations(self):
         for length in (0, 1, 127, 128, 4096, len(self.good)-1):
@@ -126,7 +154,7 @@ class Images(unittest.TestCase):
         for delta, value in ((4, 65536), (4, u32(self.good, 52)), (8, 0)):
             with self.subTest(delta=delta, value=value):
                 b = bytearray(self.good); put(b, self.bucket+delta, value); self.check(b)
-        b = bytearray(self.good); b[self.bucket+1] = 1; self.check(b)
+        b = bytearray(self.good); b[self.bucket+1] = 1; self.check(b, valid=True)
         for next_index in (u32(self.good, 56)+1, (self.bucket-self.root)//16):
             b = bytearray(self.good)
             struct.pack_into('<H', b, self.bucket+14, next_index)
@@ -135,21 +163,20 @@ class Images(unittest.TestCase):
     def test_bucket_name_length_and_reserved(self):
         for value in (0, self.good[self.bucket+13]-1, self.good[self.bucket+13]+1):
             b = bytearray(self.good); b[self.bucket+13] = value; self.check(b)
-        b = bytearray(self.good); b[self.bucket+12] = 1; self.check(b)
+        b = bytearray(self.good); b[self.bucket+12] = 1; self.check(b, valid=True)
         empty = next(self.root + 16*i for i in range(u32(self.good, 56))
                      if self.good[self.root+16*i] == 0)
-        for delta in (12, 13):
-            b = bytearray(self.good); b[empty+delta] = 1; self.check(b)
+        b = bytearray(self.good); b[empty+12] = 1; self.check(b, valid=True)
 
     def test_payload_bounds_and_terminator(self):
         obj = self.objects['file-4097']
-        for delta, value in ((4, 0), (4, 0xfffffffc), (8, 0xffffffff), (12, 1)):
+        for delta, value in ((4, 0), (4, 0xfffffffc), (8, 0xffffffff)):
             b = bytearray(self.good); put(b, obj+delta, value); self.check(b)
         b = bytearray(self.good); b[u32(b, obj+4)+4097] = 1; self.check(b)
 
     def test_parent_and_slice(self):
         obj = self.objects['hidden']
-        for delta, value in ((4, u32(self.good, 52)), (12, 0x8000ffff), (12, 0)):
+        for delta, value in ((4, u32(self.good, 52)), (12, 0)):
             b = bytearray(self.good); put(b, obj+delta, value); self.check(b)
 
     def test_hardlink(self):
@@ -171,8 +198,8 @@ class Images(unittest.TestCase):
         obj = self.objects['private']
         attr = 128 + 16 * struct.unpack_from('<H', self.good, obj+2)[0]
         b = bytearray(self.good); b[attr+3] = 0x40; self.check(b)
-        b = bytearray(self.good); put(b, attr+12, 4); self.check(b)
-        b[6] = 1; self.check(b, valid=True)
+        b = bytearray(self.good); put(b, attr+12, 4); self.check(b, valid=True)
+        b[6] = 0; self.check(b, valid=True)
 
     def test_deterministic_mutations_do_not_crash(self):
         rng = random.Random(20261014)

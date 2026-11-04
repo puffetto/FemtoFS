@@ -16,6 +16,7 @@ import zipfile
 
 BUILDER, WORK = map(lambda value: str(Path(value).resolve()), sys.argv[1:3])
 del sys.argv[1:3]
+os.environ['SOURCE_DATE_EPOCH'] = '1793746800'
 UUID = '00112233-4455-6677-8899-aabbccddeeff'
 PRIMES = [n for n in range(3, 252) if all(n % d for d in range(2, int(n ** .5) + 1))]
 
@@ -79,7 +80,7 @@ class BuilderCLI(unittest.TestCase):
 
     def image(self, path):
         image = path.read_bytes()
-        self.assertEqual(image[:8], b'0FS\0\0\4\0\1')
+        self.assertEqual(image[:8], b'0FS\0\0\4\1\1')
         self.assertEqual(struct.unpack_from('<I', image, 32)[0], len(image))
         self.assertEqual(struct.unpack_from('<I', image, 8)[0], fnv(image[16:]))
         size = struct.unpack_from('<I', image, 48)[0]
@@ -98,7 +99,7 @@ class BuilderCLI(unittest.TestCase):
         self.assertTrue(all(value % 4096 == 0 for value in (public, private, len(image))))
         self.assertEqual(image[67], 0)
         author = b'Andrea "Nemesi" Cocito - blackye at gmail dot com'
-        self.assertEqual(image[72:128], author + bytes(56 - len(author)))
+        self.assertEqual(image[78:128], author + bytes(50 - len(author)))
         cells = [struct.unpack_from('<BBHIII', image, 128 + 16 * i) for i in range(count)]
         root_attr = struct.unpack_from('<H', image, 64)[0]
         attributes, referenced_attrs = {}, {root_attr}
@@ -250,16 +251,68 @@ class BuilderCLI(unittest.TestCase):
             cursor = end
         self.assertEqual(image[cursor:], bytes(len(image) - cursor))
 
+    def test_creation_time_range_and_default_clock(self):
+        import time
+        source = self.root / 'clock'
+        source.mkdir()
+        try:
+            for unix, stored in ((1483228800, 0), (5778196095, 0xffffffff)):
+                os.environ['SOURCE_DATE_EPOCH'] = str(unix)
+                image = self.image(self.build(source))
+                self.assertEqual(struct.unpack_from('<I', image, 72)[0], stored)
+                self.assertEqual(image[76:78], bytes(2))
+            for value in ('1483228799', '5778196096', '-1', '', '1x', '999999999999999999999'):
+                os.environ['SOURCE_DATE_EPOCH'] = value
+                self.build(source, error='SOURCE_DATE_EPOCH' if value in ('', '1x', '999999999999999999999') else 'leap epoch range')
+            del os.environ['SOURCE_DATE_EPOCH']
+            before = int(time.time())
+            image = self.image(self.build(source))
+            created = struct.unpack_from('<I', image, 72)[0] + 1483228800
+            self.assertLessEqual(before, created)
+            self.assertLessEqual(created, int(time.time()))
+        finally:
+            os.environ['SOURCE_DATE_EPOCH'] = '1793746800'
+
+    def test_future_source_timestamps(self):
+        import time
+        source = self.root / 'future'
+        source.mkdir()
+        payload = source / 'payload'
+        payload.write_bytes(b'payload')
+        future = int(time.time()) + 3600
+        os.utime(payload, (future, future))
+        try:
+            del os.environ['SOURCE_DATE_EPOCH']
+            rejected = self.build(source, error='mtime later than build start')
+            self.assertFalse(rejected.exists())
+            archive = self.archive([('.', 'dir', ''), ('payload', 'file', b'payload')])
+            # PAX preserves ctime whereas traditional tar does not.
+            with tarfile.open(archive, 'w', format=tarfile.PAX_FORMAT) as tar:
+                entry = tarfile.TarInfo('payload')
+                entry.size = 7
+                entry.mtime = 0
+                entry.pax_headers = {'ctime': str(future)}
+                tar.addfile(entry, io.BytesIO(b'payload'))
+            rejected = self.build(archive, '--synthesize-dirs', error='ctime later than build start')
+            self.assertFalse(rejected.exists())
+            # An old reproducible date neither rejects newer metadata nor changes input.
+            os.environ['SOURCE_DATE_EPOCH'] = '1483228800'
+            self.image(self.build(source))
+            self.image(self.build(archive, '--synthesize-dirs'))
+        finally:
+            os.environ['SOURCE_DATE_EPOCH'] = '1793746800'
+
     def test_golden_empty_image(self):
         source = self.root / 'empty'
         source.mkdir()
         actual = self.image(self.build(source, '--root-mode', '755', '--root-uid', '0', '--root-gid', '0'))
         expected = bytearray(4096)
-        expected[:8] = b'0FS\0\0\4\0\1'
+        expected[:8] = b'0FS\0\0\4\1\1'
+        struct.pack_into('<I', expected, 72, 1793746800 - 1483228800)
         expected[16:32] = bytes.fromhex(UUID.replace('-', ''))
         struct.pack_into('<IIIII', expected, 32, 4096, 1, 4096, 4096, 16)
         author = b'Andrea "Nemesi" Cocito - blackye at gmail dot com'
-        expected[72:72 + len(author)] = author
+        expected[78:78 + len(author)] = author
         struct.pack_into('<BBHIII', expected, 128, 0x81, 0, 0o40755, 0, 0, 0)
         struct.pack_into('<I', expected, 12, fnv(expected[128:144]))
         struct.pack_into('<I', expected, 8, fnv(expected[16:]))

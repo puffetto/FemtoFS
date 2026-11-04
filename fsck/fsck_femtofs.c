@@ -1,15 +1,21 @@
 // File: fsck/fsck_femtofs.c
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Offline full validator for FemtoFS images (format version 0x0100).
+// Offline canonical-writer validator for FemtoFS images (format versions 0x0100/0x0101).
 
 /*
  * Offline structural/consistency checker for femtoFS images, following
  * "FemtoFS: zero-fsck-giving, zero-frills, read-only, near-zero-copy
- * filesystem image format" (specification.md), format version 0x0100.
+ * filesystem image format" (specification.md), format version 0x0101.
+ * Revision 0x0100 images are validated with that revision's header layout.
  *
  * This is a full validator: it performs every structural check and
  * every canonical-byte check of "Normative Validation Rules", including
  * the public/private placement rules of "Visibility Classification".
+ * Nonzero reserved bytes are reported as producer-conformance errors, as
+ * "Reserved Zero Values and Forward Compatibility" permits an offline
+ * checker to do. Images of a later major-1 revision are accepted with
+ * revision 0x0101 semantics, without the checks on bytes that revision
+ * may have assigned.
  *
  * All multi-byte fields are read as little-endian regardless of host
  * byte order, per "On-disk ABI Rules".
@@ -88,12 +94,6 @@ static const uint32_t SMALL_PRIMES[] = {
 #define S_IROTH_BITS  0004u
 #define S_IXOTH_BITS  0001u
 
-/* header.author must equal this exact 56-byte, NUL-padded identifier
- * (49 ASCII bytes + NUL + 6 zero bytes; the string literal initializer
- * zero-fills the remainder of the array automatically). */
-static const uint8_t AUTHOR_FIELD[56] =
-    "Andrea \"Nemesi\" Cocito - blackye at gmail dot com";
-
 /* ------------------------------------------------------------------ */
 /* Reporting                                                           */
 /* ------------------------------------------------------------------ */
@@ -105,6 +105,15 @@ static bool g_verbose = false;
         g_error_count++; \
         fprintf(stderr, "ERROR: " __VA_ARGS__); \
         fprintf(stderr, "\n"); \
+    } while (0)
+
+/* Zero-value and padding rules describe writer output, and a later revision
+ * may assign those bytes, so they are checked only through revision 0x0101. */
+static bool g_known_revision;
+
+#define WRITER_ERR(...) do { \
+        if (g_known_revision) \
+            ERR(__VA_ARGS__); \
     } while (0)
 
 #define INFO(...) do { \
@@ -163,6 +172,7 @@ typedef struct {
     uint8_t  root_p;
     uint8_t  root_pad;
     uint32_t hash2_base;
+    uint64_t creation_time;
 } header_t;
 
 static void parse_header(header_t *h) {
@@ -184,6 +194,7 @@ static void parse_header(header_t *h) {
     h->root_p      = rd_u8(66);
     h->root_pad    = rd_u8(67);
     h->hash2_base  = rd_u32(68);
+    h->creation_time = (h->version & 255) ? UINT64_C(1483228800) + rd_u32(72) : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -668,7 +679,7 @@ static void visit_object(uint32_t idx, const dir_desc_t *parent) {
     case FEMTOFS_TYPE_SYMLINK: {
         bool is_symlink = (c.type == FEMTOFS_TYPE_SYMLINK);
         if (c.w2 != 0)
-            ERR("cell %u (%s): realsize must be 0, got %u", idx, type_name(c.type), c.w2);
+            WRITER_ERR("cell %u (%s): realsize must be 0, got %u", idx, type_name(c.type), c.w2);
         uint16_t mode = resolve_attr(idx, c, is_symlink ? S_IFLNK_BITS : S_IFREG_BITS);
         if (!is_symlink && parent->search_ok) g_file_path_public[idx] = true;
 
@@ -697,7 +708,7 @@ static void visit_object(uint32_t idx, const dir_desc_t *parent) {
             g_any_dual_mode = true;
 
         if (c.w2 & FEMTOFS_DIR_RESERVED_BIT)
-            ERR("cell %u (DIR): realsize bit[31] must be 0", idx);
+            WRITER_ERR("cell %u (DIR): realsize bit[31] must be 0", idx);
         uint32_t parent_idx = (uint32_t)(c.w2 & FEMTOFS_DIR_PARENT_MASK);
         uint32_t n = (uint32_t)((c.w2 & FEMTOFS_DIR_N_MASK) >> FEMTOFS_DIR_N_SHIFT);
 
@@ -722,7 +733,7 @@ static void visit_object(uint32_t idx, const dir_desc_t *parent) {
             if (n != 0)
                 ERR("cell %u (DIR): tablesize == 0 but N (%u) != 0", idx, n);
             if (bucket_first != 0)
-                ERR("cell %u (DIR): tablesize == 0 but bucket_first (%u) != 0", idx, bucket_first);
+                WRITER_ERR("cell %u (DIR): tablesize == 0 but bucket_first (%u) != 0", idx, bucket_first);
         } else if ((uint64_t)bucket_first + tablesize > g_cell_count) {
             ERR("cell %u (DIR): bucket slice [%u,%u) exceeds cell_count (%u)",
                 idx, bucket_first, bucket_first + tablesize, g_cell_count);
@@ -736,7 +747,7 @@ static void visit_object(uint32_t idx, const dir_desc_t *parent) {
 
     case FEMTOFS_TYPE_FIFO: {
         if (c.w0 != 0 || c.w1 != 0 || c.w2 != 0)
-            ERR("cell %u (FIFO): data_off/size/realsize must all be 0 (got %u,%u,%u)",
+            WRITER_ERR("cell %u (FIFO): data_off/size/realsize must all be 0 (got %u,%u,%u)",
                 idx, c.w0, c.w1, c.w2);
         resolve_attr(idx, c, S_IFIFO_BITS);
         break;
@@ -744,11 +755,11 @@ static void visit_object(uint32_t idx, const dir_desc_t *parent) {
 
     case FEMTOFS_TYPE_HARDLINK: {
         if (c.f2 != 0)
-            ERR("cell %u (HARDLINK): attr_index must be 0, got %u", idx, c.f2);
+            WRITER_ERR("cell %u (HARDLINK): attr_index must be 0, got %u", idx, c.f2);
         if (c.w1 != 0)
-            ERR("cell %u (HARDLINK): size must be 0, got %u", idx, c.w1);
+            WRITER_ERR("cell %u (HARDLINK): size must be 0, got %u", idx, c.w1);
         if (c.w2 != 0)
-            ERR("cell %u (HARDLINK): realsize must be 0, got %u", idx, c.w2);
+            WRITER_ERR("cell %u (HARDLINK): realsize must be 0, got %u", idx, c.w2);
         if (c.w0 < g_cell_count && parent->search_ok)
             g_file_path_public[c.w0] = true;
         break;
@@ -819,7 +830,7 @@ int main(int argc, char **argv) {
         ident_ok = false;
     }
     if (!(h.format[0] == 0 && h.format[1] == 4)) {
-        ERR("format field is not {0,4} for version 0x0100 (got {%u,%u})",
+        ERR("format field is not {0,4} for major version 1 (got {%u,%u})",
             h.format[0], h.format[1]);
         ident_ok = false;
     }
@@ -828,16 +839,25 @@ int main(int argc, char **argv) {
     if (vmaj != 1) {
         ERR("unsupported major version %u (this checker understands major 1 only)", vmaj);
         ident_ok = false;
-    } else if (vrev != 0) {
-        INFO("version 0x%04x: revision %u is newer than 0x0100; using revision 0 semantics "
+    } else if (vrev > 1) {
+        INFO("version 0x%04x: revision %u is newer than 0x0101; using revision 1 semantics "
              "and skipping checks that need a map of extension-owned bytes", h.version, vrev);
     }
 
-    if (!in_bounds(72, 56) || memcmp(g_image + 72, AUTHOR_FIELD, 56) != 0)
-        ERR("author field does not match the required format-author identifier");
+    g_known_revision = vrev <= 1;
 
-    if (h.root_pad != 0)
-        ERR("root_pad must be 0, got %u", h.root_pad);
+    if (h.root_pad != 0) WRITER_ERR("root_pad must be 0, got %u", h.root_pad);
+
+    /* Offline writer-conformance check; mounting readers ignore this identifier. */
+    static const uint8_t author[] = "Andrea \"Nemesi\" Cocito - blackye at gmail dot com";
+    if (memcmp(g_image + (vrev ? 78 : 72), author, sizeof(author)) != 0)
+        WRITER_ERR("author field does not match the format-author identifier");
+    if (vrev == 1 && (g_image[76] || g_image[77]))
+        ERR("header padding must be zero for revision 1 writers");
+    if (vrev == 0) {
+        for (unsigned i = 122; i < 128; i++)
+            if (g_image[i]) { ERR("legacy author padding must be zero"); break; }
+    }
 
     if (h.image_size == 0)
         ERR("image_size must be > 0");
@@ -903,7 +923,7 @@ int main(int argc, char **argv) {
         if (h.root_real != 0)
             ERR("root_size == 0 but root_real (%u) != 0", h.root_real);
         if (h.root_first != 0)
-            ERR("root_size == 0 but root_first (%u) != 0", h.root_first);
+            WRITER_ERR("root_size == 0 but root_first (%u) != 0", h.root_first);
     } else if ((uint64_t)h.root_first + h.root_size > cell_count) {
         ERR("root bucket slice [%u, %u) exceeds cell_count (%u)",
             h.root_first, h.root_first + h.root_size, cell_count);
@@ -937,6 +957,7 @@ int main(int argc, char **argv) {
     }
     for (uint32_t i = 0; i < cell_count; i++) g_slice_owner[i] = UINT32_MAX;
 
+    INFO("image creation time: %" PRIu64 " Unix seconds", h.creation_time);
     g_h = h;
     g_cell_count = cell_count;
     g_image_size = image_size;
@@ -960,9 +981,9 @@ int main(int argc, char **argv) {
 
         /* reinterpreted fields: b1=reserved0, f2=mode, w0=uid, w1=gid, w2=ext_off */
         if (c.b1 != 0)
-            ERR("cell %u (ATTR): reserved0 must be 0, got %u", i, c.b1);
-        if (vrev == 0 && c.w2 != 0)
-            ERR("cell %u (ATTR): ext_off must be 0 in version 0x0100, got %u", i, c.w2);
+            WRITER_ERR("cell %u (ATTR): reserved0 must be 0, got %u", i, c.b1);
+        if (c.w2 != 0)
+            WRITER_ERR("cell %u (ATTR): ext_off must be 0 in revisions 0 and 1, got %u", i, c.w2);
         record_attr_tuple(c.f2, c.w0, c.w1, c.w2, i);
     }
     check_attr_dedup();
@@ -1012,12 +1033,12 @@ int main(int argc, char **argv) {
             cell_t c = read_cell(idx);
 
             if (c.type == FEMTOFS_TYPE_NULL) {
-                if (c.b1 != 0) ERR("cell %u: empty bucket hash_p must be 0, got %u", idx, c.b1);
-                if (c.f2 != 0) ERR("cell %u: empty bucket attr_index must be 0, got %u", idx, c.f2);
-                if (c.w0 != 0) ERR("cell %u: empty bucket data_off must be 0, got %u", idx, c.w0);
-                if (c.w1 != 0) ERR("cell %u: empty bucket size must be 0, got %u", idx, c.w1);
+                if (c.b1 != 0) WRITER_ERR("cell %u: empty bucket hash_p must be 0, got %u", idx, c.b1);
+                if (c.f2 != 0) WRITER_ERR("cell %u: empty bucket attr_index must be 0, got %u", idx, c.f2);
+                if (c.w0 != 0) WRITER_ERR("cell %u: empty bucket data_off must be 0, got %u", idx, c.w0);
+                if (c.w1 != 0) WRITER_ERR("cell %u: empty bucket size must be 0, got %u", idx, c.w1);
                 if (BUCKET_RESERVED(c) != 0 || BUCKET_NAME_LEN(c) != 0)
-                    ERR("cell %u: empty bucket reserved/name_len must be 0, got %u/%u",
+                    WRITER_ERR("cell %u: empty bucket reserved/name_len must be 0, got %u/%u",
                         idx, BUCKET_RESERVED(c), BUCKET_NAME_LEN(c));
                 if (BUCKET_NEXT(c) != d.tablesize)
                     ERR("cell %u: empty bucket next_index (%u) != tablesize (%u)",
@@ -1028,11 +1049,11 @@ int main(int argc, char **argv) {
 
             occupied_count++;
             if (c.b1 != 0)
-                ERR("cell %u: occupied bucket has hash_p != 0 (%u)", idx, c.b1);
+                WRITER_ERR("cell %u: occupied bucket has hash_p != 0 (%u)", idx, c.b1);
             if (c.f2 != 0)
-                ERR("cell %u: occupied bucket has attr_index != 0 (%u)", idx, c.f2);
+                WRITER_ERR("cell %u: occupied bucket has attr_index != 0 (%u)", idx, c.f2);
             if (BUCKET_RESERVED(c) != 0)
-                ERR("cell %u: occupied bucket reserved byte must be 0, got %u", idx, BUCKET_RESERVED(c));
+                WRITER_ERR("cell %u: occupied bucket reserved byte must be 0, got %u", idx, BUCKET_RESERVED(c));
             if (BUCKET_NEXT(c) > d.tablesize)
                 ERR("cell %u: occupied bucket next_index (%u) neither sentinel (%u) nor in-range",
                     idx, BUCKET_NEXT(c), d.tablesize);
@@ -1109,7 +1130,7 @@ int main(int argc, char **argv) {
             ERR("at least one directory uses DUAL hash mode but hash2_base (%u) is not a prime "
                 "in (2^8, 2^24)", h.hash2_base);
     } else if (h.hash2_base != 0) {
-        ERR("no directory uses DUAL hash mode, but hash2_base (%u) is not 0", h.hash2_base);
+        WRITER_ERR("no directory uses DUAL hash mode, but hash2_base (%u) is not 0", h.hash2_base);
     }
 
     if (g_object_count >= MAX_OBJECT_COUNT)
@@ -1119,7 +1140,7 @@ int main(int argc, char **argv) {
 
     for (uint64_t off = FEMTOFS_HEADER_SIZE + h.meta_size; off < h.public_off; off++) {
         if (g_image[off] != 0) {
-            ERR("header-to-content alignment gap contains non-zero byte at offset %" PRIu64, off);
+            WRITER_ERR("header-to-content alignment gap contains non-zero byte at offset %" PRIu64, off);
             break;
         }
     }
@@ -1133,7 +1154,7 @@ int main(int argc, char **argv) {
 
     /* ---------------- hole-zero scan over the content region ---------------- */
 
-    if (vrev != 0) {
+    if (!g_known_revision) {
         INFO("hole/padding zero-fill check skipped: revision %u may own bytes this checker "
              "cannot map", vrev);
     } else {
@@ -1176,7 +1197,7 @@ int main(int argc, char **argv) {
             break;
         case FEMTOFS_TYPE_NULL:
             if (c.b1 != 0 || c.f2 != 0 || c.w0 != 0 || c.w1 != 0 || c.w2 != 0)
-                ERR("cell %u (NULL, outside any directory slice): unused cell must be entirely "
+                WRITER_ERR("cell %u (NULL, outside any directory slice): unused cell must be entirely "
                     "zero apart from the type byte", i);
             break;
         default:

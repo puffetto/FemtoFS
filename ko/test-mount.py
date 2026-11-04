@@ -83,6 +83,15 @@ try:
     run(ctl, 'add', label, '/dev/'+unit); banked = True
     run(helper, label, mountpoint); mounted = True
     assert list(mountpoint.iterdir()) == [] and mountpoint.stat().st_nlink == 2
+    raw_header = empty_image.read_bytes()[:128]
+    expected_time = 1483228800 + struct.unpack_from('<I', raw_header, 72)[0]
+    status = mountpoint.stat()
+    assert status.st_atime_ns == status.st_mtime_ns == status.st_ctime_ns == expected_time * 10**9
+    assert status.st_birthtime == expected_time
+    copied = base / 'copied-empty'
+    run('cp', '-RpP', mountpoint, copied)
+    assert copied.stat().st_mtime_ns == copied.stat().st_atime_ns == expected_time * 10**9
+
     run('umount', mountpoint); mounted = False
     run('mdconfig', '-d', '-u', unit); unit = None
     run(ctl, 'discard', label); banked = False

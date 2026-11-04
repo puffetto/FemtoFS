@@ -2,8 +2,13 @@
 
 This document defines a compact, memory-friendly filesystem image format.
 
-**Frozen at 2026-10-25T14:42:45Z (UTC), format version `0x0100`.
-Any incompatible change after this timestamp MUST use a new major format version.**
+**Format version `0x0101`, updated 2026-11-04.
+Revision `0x0100` was frozen at 2026-10-25T14:42:45Z (UTC).
+Revision `0x0101` retains the 128-byte header and all metadata/content offsets,
+but moves the informational author identifier to add an image creation time.
+Old readers that validate the former author location will reject these images;
+readers that ignore author bytes can continue to read them. This header change
+is an explicit exception to the original major-version compatibility rule.**
 
 ## Scope
 
@@ -77,7 +82,7 @@ Security note:
 
 ## On-disk ABI Rules
 
-In format version `0x0100`, all multi-byte integers are little-endian and all
+In format version `0x0101`, all multi-byte integers are little-endian and all
 integers are fixed-width:
 - `uint8_t`
 - `uint16_t`
@@ -117,7 +122,7 @@ the image, including `public_off`, `private_off`, object `data_off` when used as
 a byte offset, and bucket filename offsets. A content pointer `off` is valid
 only if `public_off <= off < image_size`; it is public if `off < private_off`
 and private otherwise, so `private_off` is the only boundary needed to classify
-it. `ext_off` is a reserved field that must be zero in this version; a future
+it. Writers must zero the reserved `ext_off`; readers SHOULD ignore it; a future
 revision must define the offset rules for it and any extension-record offsets
 it introduces (see **Metadata Extension Hook**).
 
@@ -144,7 +149,7 @@ same 16-byte metadata table.
 struct femtofs_header {
     uint8_t  magic[4];       // "0FS\0"
     uint8_t  format[2];      // { byte order, page shift minus 8 }, currently {0, 4}
-    uint16_t version;        // format version, currently 0x0100
+    uint16_t version;        // format version, currently 0x0101
     uint32_t image_hash;     // FNV-1 32-bit hash from uuid through final image byte
     uint32_t meta_hash;      // FNV-1 32-bit hash over metadata table
 
@@ -164,7 +169,9 @@ struct femtofs_header {
     uint8_t  root_pad;       // must be 0
     uint32_t hash2_base;     // global second-hash base prime for dual-hash mode
 
-    uint8_t  author[56];     // 'Andrea "Nemesi" Cocito - blackye at gmail dot com\0', zero-padded
+    uint32_t creation_time;  // offset 72: seconds since the leap epoch
+    uint8_t  padding[2];     // offset 76: writers MUST write zero
+    uint8_t  author[50];     // offset 78: 'Andrea "Nemesi" Cocito - blackye at gmail dot com\0', zero-padded
 };                           // exactly 128 bytes
 ```
 
@@ -174,11 +181,71 @@ Notes:
 - `hash2_base` is used only when at least one directory (including root) is in
   dual-hash mode; otherwise it must be `0` (see **Directory Hash-Control
   Encoding**).
-- `author` is the fixed 56-byte format-author identifier shown in the structure
-  declaration: its 49 ASCII bytes occupy `author[0..48]`, `author[49]` is the
-  terminating NUL, and `author[50..55]` are zero.
+- `author` is informational: 49 ASCII bytes followed by a NUL, at bytes
+  `78..127`. Writers MUST emit the identifier above; readers SHOULD ignore it.
+- Revision `0x0100` instead stores `author[56]` at bytes `72..127`, with six
+  trailing zero bytes; it has no creation timestamp. Readers supporting that
+  revision MUST NOT interpret its author bytes as a timestamp.
 - Bounds and alignment of the header fields are listed in **Normative
   Validation Rules**.
+
+### Leap Epoch and Image Timestamps
+
+The **leap epoch** is `2017-01-01 00:00:00 UTC`, the first instant after the
+2016-12-31 leap second. `creation_time` is an unsigned little-endian 32-bit
+count of POSIX seconds since that epoch, with whole-second precision and no
+leap-second accumulation. Zero is valid and denotes the epoch itself.
+
+Convert using 64-bit arithmetic:
+
+```c
+unix_seconds = (uint64_t)creation_time + UINT64_C(1483228800);
+```
+
+The largest value denotes `2153-02-07 06:28:15 UTC`; producers MUST reject times
+outside the representable range instead of wrapping. An image's timestamp is
+fixed at build time, never mount time. Readers expose it for every object's
+access, modification, status-change and birth times, with nanoseconds zero.
+Readers supporting revision `0x0100` retain its all-zero Unix timestamps.
+This records image creation, not original per-file chronology.
+
+`makefemtofs` captures the current real-time clock at startup, before reading
+input, and uses its whole seconds for the image timestamp. `SOURCE_DATE_EPOCH`,
+when set, is a decimal Unix-seconds value overriding that timestamp for
+reproducible builds; it MUST parse completely and fall within the leap-epoch
+field's range.
+
+Unless `SOURCE_DATE_EPOCH` is set, the builder MUST reject any input `mtime` or
+`ctime` later than the captured startup time, using all available subsecond
+precision for comparison. Equality is allowed. This applies to the input root,
+all directory-tree entries and available archive-entry timestamps. Missing
+archive timestamps are not invented. The directory tree (including its root)
+and the archive input file MUST be checked again after reading, before output
+publication. Diagnostics MUST identify the path, timestamp kind and offending
+value. The final metadata checks of regular-file identity, size and ownership
+remain independent of this timestamp guard.
+
+This is a conservative consistency check, not an atomic source snapshot.
+Coarse clocks and races can escape detection. Clock skew, including NFS server
+clock skew, can cause rejection of otherwise unchanged input; this is accepted.
+Setting `SOURCE_DATE_EPOCH` disables the startup-time guard, not the independent
+regular-file metadata checks.
+
+### Reserved Zero Values and Forward Compatibility
+
+Any field, bit or padding byte specified as zero is available for future use.
+Until a revision defines its use, writers MUST write zero and readers SHOULD
+ignore its value. This rule overrides older instructions to reject nonzero
+reserved values, including `root_pad`, header padding, bucket and object
+reserved fields, attribute `reserved0`, and unknown `ext_off` metadata.
+The author identifier is likewise informational for readers.
+
+Hashes are not exempted from integrity verification: reserved and padding bytes
+remain covered by the applicable hashes, even when their meanings are ignored.
+Structural validation, bounds checks, string termination and safe zero-fill of
+mapped file tails remain necessary. An offline canonical-writer checker MAY
+report nonzero reserved bytes as producer-conformance errors; mounting readers
+SHOULD accept them without interpreting unknown semantics.
 
 The two single-byte `format` fields can be read before interpreting any
 multi-byte field:
@@ -190,12 +257,12 @@ multi-byte field:
     readers.
   - Values `2` through `255` are available for future format definitions.
 - `format[1]` is the base-2 page-size exponent minus 8, so a defined value `n`
-  denotes a page size of `2^(n + 8)` bytes. Version `0x0100` defines only `4`,
+  denotes a page size of `2^(n + 8)` bytes. Version `0x0101` defines only `4`,
   meaning 4096 bytes; all other values are available for future format
   definitions and must be rejected by version `0x0100` readers. Implementations
   must validate this byte before using it as a shift count.
 
-Therefore, the only valid format field in version `0x0100` is `{0, 4}`. Images
+Therefore, the only valid format field in version `0x0101` is `{0, 4}`. Images
 are portable between supported machines that implement this format; a VM page-
 size mismatch is handled as specified below, and architecture names do not
 otherwise affect the on-disk format. A kernel or other consumer must reject an
@@ -213,7 +280,7 @@ structurally usable encoded page is `2^31` bytes (`format[1] == 23`). A value of
 least `2^32`, which this layout cannot represent.
 
 Throughout this specification, `PAGE_SIZE` means the decoded image page size,
-which is exactly 4096 bytes in version `0x0100`. `VM_PAGE_SIZE` means the
+which is exactly 4096 bytes in version `0x0101`. `VM_PAGE_SIZE` means the
 mounting kernel's runtime `PAGE_SIZE`; a "kernel VM page" is exactly
 `VM_PAGE_SIZE` bytes.
 
@@ -243,12 +310,12 @@ The 16-bit `version` field is a short semantic version written as `0xMMrr`:
 - `MM`, the high byte, is the major version.
 - `rr`, the low byte, is the revision within that major version.
 - The version defined by this specification is therefore major `1`, revision
-  `0` (`0x0100`).
+  `1` (`0x0101`).
 
 A producer that introduces an extension or specification change that can make
 an image incompatible with consumers of the existing major version MUST assign
-a different `MM`. A producer SHOULD assign a new `rr` when it introduces an
-extension or specification change that remains backward compatible with all
+a different `MM`, except for the explicitly documented `0x0101` header change.
+A producer SHOULD assign a new `rr` when it introduces an extension or specification change that remains backward compatible with all
 earlier revisions of the same `MM`.
 
 A consumer MUST accept only major versions that it explicitly understands. It
@@ -670,8 +737,8 @@ struct femtofs_metaext {
 
 Rules:
 - Version `0x0100` does not define an extension-record or ACL/xattr payload
-  encoding. Its producers MUST write `ext_off == 0`, and consumers MUST reject
-  an attribute with `ext_off != 0` when the image revision is exactly `0x0100`.
+  encoding. Producers of revisions `0x0100` and `0x0101` MUST write `ext_off == 0`, and consumers SHOULD ignore
+  unknown `ext_off` values, as specified in **Reserved Zero Values and Forward Compatibility**.
 - When a major-1 consumer that understands only revision `0x0100` accepts a
   higher major-1 revision, it MUST ignore `ext_off` and extension payloads it
   does not understand. It continues to expose and enforce `mode`, `uid`, and
@@ -1108,16 +1175,17 @@ Record sizes are fixed by the **On-disk ABI Rules**; blob alignment is fixed by
 - `public_off`, `private_off`, and `image_size` must be image-page-aligned.
 - All bytes in the header/metadata-to-content alignment gap, content-packing
   holes, public/private alignment gap, and final image padding must be `0x00`.
-  Builders must initialize these ranges explicitly. Full validation must reject
-  nonzero padding; a kernel may omit the complete padding scan as described
-  below.
+  Builders MUST initialize these ranges explicitly. Canonical-writer validators
+  MAY diagnose nonzero padding; readers SHOULD ignore unknown padding values,
+  subject to the string-termination and mapping-safety requirements above.
 
 ---
 
 ## Normative Validation Rules (Builder/Reader/Kernel)
 
 This section defines normative (`MUST`/`SHOULD`/`MAY`) checks for deterministic
-interoperability and safe mounting.
+interoperability and safe mounting. Zero-value requirements below describe
+writer output; readers follow **Reserved Zero Values and Forward Compatibility**.
 
 Structural checks are mandatory for builders and all consumers. Canonical-byte
 checks are mandatory for builders and offline/full validators but may require a
@@ -1137,8 +1205,8 @@ Header and top-level bounds:
     `rr` must be handled according to **Short Semantic Version** above.
 - A kernel reader must apply **Image and VM Page-Size Compatibility**; page-size
   mismatch alone is not grounds for rejecting an otherwise supported image.
-- `author` must equal the specified NUL-terminated format-author identifier and
-  zero-filled remainder.
+- Writers MUST emit the specified NUL-terminated format-author identifier;
+  readers SHOULD ignore it and header padding.
 - `root_pad == 0`.
 - `image_size > 0` and `image_size <= backing_provider_size`.
 - `0 < cell_count < 2^16`.
@@ -1181,10 +1249,9 @@ Cell typing, attributes, and reserved fields:
   `FIFO`, and `ATTR`; unknown non-auxiliary and auxiliary types are invalid.
 - For each discovered `FILE`, `DIR`, `SYMLINK`, or `FIFO` object,
   `attr_index < cell_count` and `cell[attr_index]` must be an `ATTR` cell.
-- Every `ATTR` cell, referenced or not, must have `reserved0 == 0` and
-  `ext_off == 0` when the image revision is exactly `0x0100`. A consumer that
-  accepts a higher major-1 revision follows the forward-compatibility rules in
-  **Short Semantic Version** for an extension it does not understand.
+- Writers MUST zero `ATTR.reserved0` and `ext_off` until their use is defined.
+  Readers SHOULD ignore reserved values and extensions they do not understand,
+  following **Reserved Zero Values and Forward Compatibility**.
 - Every `ATTR` cell must be referenced by the root or at least one discovered
   non-hardlink object, and each distinct `(mode, uid, gid, ext_off)` tuple must
   be represented by exactly one `ATTR` cell.

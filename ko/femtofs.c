@@ -91,7 +91,8 @@ static int ff_getattr(struct vop_getattr_args *ap)
     a->va_fileid = inode(&FN(vp)->fs->bank->image, FN(vp)->id);
     a->va_size = n->type == FF_DIR ? n->entries : n->size;
     a->va_blocksize = PAGE_SIZE; a->va_bytes = roundup2(a->va_size, 512);
-    a->va_atime = a->va_mtime = a->va_ctime = a->va_birthtime = (struct timespec){0, 0};
+    a->va_atime = a->va_mtime = a->va_ctime = a->va_birthtime = (struct timespec){
+        .tv_sec = (time_t)FN(vp)->fs->bank->image.creation_time, .tv_nsec = 0};
     a->va_gen = 1; a->va_flags = 0; a->va_rdev = NODEV; a->va_filerev = 0;
     return 0;
 }

@@ -1,6 +1,6 @@
 // File: programs/femtofsSim.cpp
 // Created by Andrea "Nemesi" Cocito on 24/08/2026
-// Estimate FemtoFS 0x0100 metadata, hashing, packing, and mmap behavior.
+// Estimate FemtoFS 0x0101 metadata, hashing, packing, and mmap behavior.
 
 #include <algorithm>
 #include <array>
@@ -1748,7 +1748,7 @@ int main(int argc, char** argv) {
     std::cout << "  effective mmap mode forced:    "
               << (vmForcesClean ? "clean" : "none") << "\n";
     if (imagePageSize != femtofs::kPageSize) {
-        std::cout << "  compatibility:                future-format experiment, not a valid 0x0100 image model\n";
+        std::cout << "  compatibility:                future-format experiment, not a valid 0x0101 image model\n";
     }
     std::cout << "\n";
 

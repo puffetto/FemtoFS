@@ -4,6 +4,8 @@
 # Exercise equivalent directory and archive builds through the public CLI.
 
 set -eu
+SOURCE_DATE_EPOCH=1793746800
+export SOURCE_DATE_EPOCH
 
 builder=$1
 work_root=$2

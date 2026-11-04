@@ -62,6 +62,7 @@ int main(int argc, char **argv)
         }
     }
     assert(count == im.objects);
+    printf("creation_time=%llu\n", (unsigned long long)im.creation_time);
     printf("validated %u objects, %u unique blobs; lookup and page-policy checks passed\n", count, im.nblobs);
     ff_destroy(&im); free(bytes);
     return 0;

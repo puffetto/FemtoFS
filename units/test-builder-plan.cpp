@@ -222,11 +222,50 @@ TEST_CASE("directory recheck rejects a source changed after spooling", "[builder
     const auto path = std::filesystem::path(fixture.options.input) / "changing";
     std::ofstream(path) << "payload";
     REQUIRE(::chmod(path.c_str(), 0644) == 0);
+    fixture.options.checkInputTimes = false;
     Spool spool(fixture.options.tempDir);
     REQUIRE_NOTHROW(readDirectory(fixture.options, spool));
     io.changeSource = path.string();
     CHECK_THROWS_WITH(readDirectory(fixture.options, spool),
                       ContainsSubstring("input file changed while being read"));
+}
+
+TEST_CASE("source timestamp cutoff retains nanoseconds and fixes the header clock", "[builder][source]")
+{
+    Fixture fixture;
+    fixture.options.checkInputTimes = true;
+    fixture.options.started = {1793746800, 500000000};
+    CHECK_NOTHROW(checkInputTime(fixture.options, 1793746800, 499999999, "file", "mtime"));
+    CHECK_NOTHROW(checkInputTime(fixture.options, 1793746800, 500000000, "file", "ctime"));
+    CHECK_NOTHROW(checkInputTime(fixture.options, 1793746799, 999999999, "file", "ctime"));
+    CHECK_THROWS_WITH(checkInputTime(fixture.options, 1793746800, 500000001, "file", "ctime"),
+                      ContainsSubstring("file: ctime later than build start"));
+    CHECK_THROWS_WITH(checkInputTime(fixture.options, 1793746801, 0, "file", "mtime"),
+                      ContainsSubstring("file: mtime later than build start"));
+    fixture.options.checkInputTimes = false;
+    CHECK_NOTHROW(checkInputTime(fixture.options, 1793746801, 0, "file", "mtime"));
+    Spool spool(fixture.options.tempDir);
+    auto plan = fixture.plan(spool);
+    const auto created = std::getenv("SOURCE_DATE_EPOCH");
+    const uint64_t expected = created ? std::stoull(created) : fixture.options.started.tv_sec;
+    CHECK(femtofs::load32(plan.header, 72) == expected - femtofs::kLeapEpoch);
+}
+
+TEST_CASE("directory recheck detects ctime advancing after spooling", "[builder][source]")
+{
+    Fixture fixture;
+    const auto path = std::filesystem::path(fixture.options.input) / "changing";
+    std::ofstream(path) << "payload";
+    REQUIRE(::chmod(path.c_str(), 0644) == 0);
+    REQUIRE(::clock_gettime(CLOCK_REALTIME, &fixture.options.started) == 0);
+    fixture.options.checkInputTimes = true;
+    Spool spool(fixture.options.tempDir);
+    REQUIRE_NOTHROW(readDirectory(fixture.options, spool));
+    // The existing lstat hook changes permissions only at the post-spool recheck:
+    // ctime advances while mtime and content size remain unchanged.
+    io.changeSource = path.string();
+    CHECK_THROWS_WITH(readDirectory(fixture.options, spool),
+                      ContainsSubstring("changing: ctime later than build start"));
 }
 
 TEST_CASE("all hash prime indices and unsigned overflow follow the format", "[builder][hash]")

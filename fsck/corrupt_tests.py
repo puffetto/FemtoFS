@@ -1,28 +1,54 @@
 #!/usr/bin/env python3
-"""Corrupts test_subdir.0fs in specific, targeted ways and checks that
-fsck_femtofs (a) flags an error and (b) exits nonzero, i.e. doesn't
-silently accept broken images. Each case is a single-byte or small edit
-chosen to hit one specific normative rule.
+"""Mutates the test images in specific, targeted ways and checks fsck_femtofs's
+verdict. A rejection case passes only if the checker exits 1 and reports the
+expected diagnostic, and hashes are recomputed after each mutation, so a case
+cannot pass merely because the image hash no longer matches. An acceptance case
+(expect=None) passes only if the checker exits 0.
 """
+import os
 import struct
 import subprocess
 import sys
 
-FSCK = "./fsck_femtofs"
-SRC = "test_subdir.0fs"
+import make_test_image as img
 
-def load():
-    with open(SRC, "rb") as f:
+FSCK = "./fsck_femtofs"
+SUBDIR = "test_subdir.0fs"
+LEGACY = "test_legacy.0fs"
+RICH = "test_rich.0fs"
+
+FNV1_32_INIT = 0x811c9dc5
+FNV_32_PRIME = 0x01000193
+
+def load(path):
+    with open(path, "rb") as f:
         return bytearray(f.read())
 
-def run(name, data):
-    path = f"/tmp/corrupt_{name}.0fs"
+def fnv1_32(data, hval=FNV1_32_INIT):
+    for b in data:
+        hval = (hval * FNV_32_PRIME) & 0xFFFFFFFF
+        hval ^= b
+    return hval
+
+def recompute_hashes(d):
+    meta_size = struct.unpack_from("<I", d, 48)[0]
+    struct.pack_into("<I", d, 12, fnv1_32(bytes(d[128:128 + meta_size])))
+    struct.pack_into("<I", d, 8, fnv1_32(bytes(d[16:])))
+    return d
+
+def run(name, data, expect):
+    path = f"corrupt_{name}.0fs"
     with open(path, "wb") as f:
         f.write(data)
     r = subprocess.run([FSCK, path], capture_output=True, text=True)
-    ok = r.returncode != 0
-    status = "PASS (correctly rejected)" if ok else "FAIL (accepted bad image!)"
-    print(f"[{status}] {name}: exit={r.returncode}")
+    os.unlink(path)
+    if expect is None:
+        ok = r.returncode == 0
+        verdict = "correctly accepted" if ok else "rejected valid image!"
+    else:
+        ok = r.returncode == 1 and expect in r.stderr
+        verdict = "correctly rejected" if ok else f"expected exit 1 with {expect!r}"
+    print(f"[{'PASS' if ok else 'FAIL'} ({verdict})] {name}: exit={r.returncode}")
     if not ok:
         print("  --- fsck output ---")
         print(r.stdout, r.stderr)
@@ -30,161 +56,321 @@ def run(name, data):
 
 cases = {}
 
-def case(name):
+def case(name, expect, src=SUBDIR, rehash=True):
     def deco(f):
-        cases[name] = f
+        cases[name] = (f, expect, src, rehash)
         return f
     return deco
 
-@case("bad_magic")
+def cell(i):
+    return 128 + i * 16
+
+def set_version(d, version):
+    struct.pack_into("<H", d, 6, version)
+
+# ---- header identity and bounds -------------------------------------------
+
+@case("bad_magic", "magic is not")
 def _(d):
     d[0] = ord('X')
-    return d
 
-@case("bad_root_pad")
+@case("bad_format", "format field is not")
+def _(d):
+    d[5] = 5
+
+@case("major_version_2", "unsupported major version")
+def _(d):
+    set_version(d, 0x0201)
+
+@case("bad_root_pad", "root_pad must be 0")
 def _(d):
     d[67] = 1
-    return d
 
-@case("cell_count_zero")
+@case("cell_count_zero", "cell_count must be > 0")
 def _(d):
     struct.pack_into("<I", d, 36, 0)
-    return d
 
-@case("meta_hash_corrupt")
+@case("meta_hash_corrupt", "meta_hash mismatch", rehash=False)
 def _(d):
     struct.pack_into("<I", d, 12, 0xdeadbeef)
-    return d
 
-@case("image_hash_corrupt")
+@case("image_hash_corrupt", "image_hash mismatch", rehash=False)
 def _(d):
     struct.pack_into("<I", d, 8, 0xdeadbeef)
-    return d
 
-@case("root_p_bad_p1_index")
+@case("root_p_bad_p1_index", "root_p (0x3f)")
 def _(d):
     d[66] = 0x3F  # p1_index=63 >= SMALL_PRIMES_COUNT(53), mode SINGLE
-    return d
 
-@case("unknown_cell_type")
+# ---- revision 0x0101 header layout ----------------------------------------
+
+@case("author_field_wrong", "author field")
+def _(d):
+    d[78] = ord('X')
+
+@case("author_not_terminated", "author field")
+def _(d):
+    d[127] = ord('X')
+
+@case("header_padding_nonzero", "header padding")
+def _(d):
+    d[76] = 1
+
+@case("creation_time_epoch", None)
+def _(d):
+    struct.pack_into("<I", d, 72, 0)  # zero is valid and denotes the epoch itself
+
+@case("creation_time_max", None)
+def _(d):
+    struct.pack_into("<I", d, 72, 0xFFFFFFFF)  # every u32 value is representable
+
+@case("legacy_layout_stamped_0x0101", "author field", src=LEGACY)
+def _(d):
+    set_version(d, 0x0101)
+
+# ---- revision 0x0100 header layout ----------------------------------------
+
+@case("legacy_author_wrong", "author field", src=LEGACY)
+def _(d):
+    d[72] = ord('X')
+
+@case("legacy_author_padding", "legacy author padding", src=LEGACY)
+def _(d):
+    d[122] = 1
+
+@case("new_layout_stamped_0x0100", "author field")
+def _(d):
+    set_version(d, 0x0100)
+
+# ---- cells and object graph -----------------------------------------------
+
+@case("unknown_cell_type", "unknown non-aux type 0x42")
 def _(d):
     d[128] = 0x42  # cell 0's type byte -> unknown, non-aux, not in {0..5,0x81}
-    return d
 
-@case("hardlink_target_wrong_type")
+@case("hardlink_target_wrong_type", "is not a discovered FILE")
 def _(d):
-    # Repurpose cell 2 (currently a root bucket entry) is risky; instead
-    # flip the DIR cell (index 6, offset 128+6*16=224) to look like it's
-    # a HARDLINK targeting cell 0 (an ATTR cell) by directly editing a
-    # *copy* of a hardlink-shaped cell. Simpler: corrupt cell 6's type
-    # from DIR to HARDLINK while leaving w0 pointing at cell 0 (ATTR) --
-    # this exercises "hardlink target must be FEMTOFS_TYPE_FILE".
-    off = 128 + 6 * 16
-    d[off] = 4  # FEMTOFS_TYPE_HARDLINK
-    struct.pack_into("<H", d, off + 2, 0)       # attr_index = 0 (required)
-    struct.pack_into("<III", d, off + 4, 0, 0, 0)  # target=cell 0 (ATTR), size=0, realsize=0
-    return d
+    # Flip the DIR cell (index 6) to a HARDLINK targeting cell 0 (an ATTR cell).
+    off = cell(6)
+    d[off] = img.TYPE_HARDLINK
+    struct.pack_into("<H", d, off + 2, 0)
+    struct.pack_into("<III", d, off + 4, 0, 0, 0)
 
-@case("file_realsize_nonzero")
+@case("file_realsize_nonzero", "realsize must be 0")
 def _(d):
-    # cell 4 is hello.txt's FILE object at offset 128+4*16=192; word2 (realsize) at +12
-    off = 128 + 4 * 16
-    struct.pack_into("<I", d, off + 12, 1)
-    return d
+    # cell 4 is hello.txt's FILE object; word 2 (realsize) is at +12
+    struct.pack_into("<I", d, cell(4) + 12, 1)
 
-@case("filename_has_slash")
+@case("filename_has_slash", "contains '/'")
 def _(d):
-    # "hello.txt" bytes live in the public part; find and corrupt one byte to '/'
+    # "hello.txt" bytes live in the public part; corrupt one byte to '/'
     idx = d.find(b"hello.txt")
     assert idx != -1
-    d[idx + 2] = ord('/')  # "he/lo.txt"
-    return d
+    d[idx + 2] = ord('/')
 
-@case("duplicate_name_in_root")
+@case("duplicate_name_in_root", "duplicate directory-entry name")
 def _(d):
-    # Point root bucket slot 1's name_off (cell 3, "sub") at the same
-    # offset as slot 0's name ("hello.txt"), creating a duplicate-name
-    # situation is awkward without recomputing hashes; instead just
-    # duplicate the literal bytes: overwrite the "sub" blob region with
-    # "hello.txt\0" truncated -- simpler: point cell 3's name_off directly
-    # at hello.txt's name offset.
-    hello_off = d.find(b"hello.txt")
-    off = 128 + 3 * 16  # cell 3 = root bucket slot 1 ("sub" -> DIR)
-    struct.pack_into("<I", d, off + 8, hello_off)  # w1 = name_off
-    return d
+    # Point cell 3's name_off at the other root bucket's filename.
+    other = struct.unpack_from("<I", d, cell(2) + 8)[0]
+    struct.pack_into("<I", d, cell(3) + 8, other)
 
-@case("nonzero_hole_byte")
+@case("nonzero_hole_byte", "alignment gap")
 def _(d):
-    # header-to-content gap is [128+meta_size, public_off); corrupt one
-    # byte there if it exists.
+    # header-to-content gap is [128+meta_size, public_off)
     meta_size = struct.unpack_from("<I", d, 48)[0]
     public_off = struct.unpack_from("<I", d, 40)[0]
-    gap_start = 128 + meta_size
-    if gap_start < public_off:
-        d[gap_start] = 0xFF
-    else:
-        print("  (no header-to-content gap in this image; skipping mutation)")
-    return d
+    assert 128 + meta_size < public_off
+    d[128 + meta_size] = 0xFF
 
-def _recompute_hashes(d):
-    FNV1_32_INIT=0x811c9dc5; FNV_32_PRIME=0x01000193
-    def fnv1_32(data, hval=FNV1_32_INIT):
-        for b in data:
-            hval=(hval*FNV_32_PRIME)&0xFFFFFFFF; hval^=b
-        return hval
-    meta_size = struct.unpack_from("<I", d, 48)[0]
-    meta_hash = fnv1_32(bytes(d[128:128+meta_size]))
-    struct.pack_into("<I", d, 12, meta_hash)
-    image_hash = fnv1_32(bytes(d[16:]))
-    struct.pack_into("<I", d, 8, image_hash)
-    return d
-
-@case("author_field_wrong")
+@case("nonzero_content_hole", "unaccounted-for non-zero byte")
 def _(d):
-    d[72] = ord('X')  # corrupt first byte of the required author string
-    return _recompute_hashes(d)
+    private_off = struct.unpack_from("<I", d, 44)[0]
+    d[private_off - 1] = 0xFF
 
-@case("bucket_type_mismatch")
+@case("bucket_type_mismatch", "does not exactly equal")
 def _(d):
-    # cell 4 = hello.txt FILE object. Corrupt whichever root bucket cell
-    # (2 or 3) targets it so its own type byte no longer matches cell 4's
-    # actual type (FILE), without touching the target itself.
-    for bucket_off in (128 + 2*16, 128 + 3*16):
-        target = struct.unpack_from("<I", d, bucket_off+4)[0]
-        if target == 4:
-            d[bucket_off] = 5  # FEMTOFS_TYPE_FIFO, doesn't match FILE
+    # Corrupt whichever root bucket targets cell 4 (FILE) to claim FIFO.
+    for bucket_off in (cell(2), cell(3)):
+        if struct.unpack_from("<I", d, bucket_off + 4)[0] == 4:
+            d[bucket_off] = img.TYPE_FIFO
             break
-    return _recompute_hashes(d)
 
-@case("double_bucket_target")
+@case("double_bucket_target", "already targeted")
 def _(d):
-    # Force BOTH root bucket cells (2 and 3) to target the same object
-    # (cell 4, hello.txt), violating "exactly one occupied bucket".
-    struct.pack_into("<I", d, 128 + 3*16 + 4, 4)
-    d[128 + 3*16] = 1  # FEMTOFS_TYPE_FILE, so type still matches target
-    return _recompute_hashes(d)
+    # Force both root buckets to target cell 4, violating "exactly one".
+    struct.pack_into("<I", d, cell(3) + 4, 4)
+    d[cell(3)] = img.TYPE_FILE
 
-@case("hash_anchor_wrong")
+@case("hash_anchor_wrong", "not reachable from")
 def _(d):
-    # Swap the two root bucket cells' *slot contents* (but keep them at
-    # the same physical cells 2/3) so each entry no longer sits on its
-    # own correct hash-computed anchor/chain -- the structural rules
-    # (sentinels, N, chain shape) all still hold, only hash-reachability
-    # breaks.
-    off2, off3 = 128 + 2*16, 128 + 3*16
-    cell2 = bytes(d[off2:off2+16])
-    cell3 = bytes(d[off3:off3+16])
-    d[off2:off2+16] = cell3
-    d[off3:off3+16] = cell2
-    return _recompute_hashes(d)
+    # Swap the two root buckets so an entry leaves its own hash chain; the
+    # shape rules (sentinels, N) still hold, only hash reachability breaks.
+    off2, off3 = cell(2), cell(3)
+    cell2, cell3 = bytes(d[off2:off2 + 16]), bytes(d[off3:off3 + 16])
+    d[off2:off2 + 16] = cell3
+    d[off3:off3 + 16] = cell2
+
+# ---- the rich image: rules no smaller fixture can reach --------------------
+
+def rich_bucket(placed_name):
+    placed, _free = img.rich_root_layout()
+    for rel, (name, _target, _next) in placed.items():
+        if name == placed_name:
+            return img.RICH_ROOT_FIRST + rel
+    raise KeyError(placed_name)
+
+def rich_empty_bucket():
+    return img.RICH_ROOT_FIRST + img.rich_root_layout()[1][1]
+
+@case("symlink_payload_in_public", "payload must be private", src=RICH)
+def _(d):
+    public_name = struct.unpack_from("<I", d, cell(rich_bucket(b"pub.txt")) + 8)[0]
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_SYM) + 4, public_name)
+
+@case("public_name_in_private_part", "stored in the private part", src=RICH)
+def _(d):
+    # priv/ becomes world-listable, so "secret" must have moved to the public part.
+    struct.pack_into("<H", d, cell(img.RICH_ATTR_PRIV_DIR) + 2, img.S_IFDIR | 0o755)
+
+@case("private_payload_in_public_part", "none of its references is public", src=RICH)
+def _(d):
+    # pub.txt loses world-read, but its payload stays in the public part.
+    struct.pack_into("<H", d, cell(img.RICH_ATTR_PUB) + 2, img.S_IFREG | 0o640)
+
+@case("hash2_base_not_prime", "hash2_base", src=RICH)
+def _(d):
+    struct.pack_into("<I", d, 68, 65535)  # in range, but 3 * 5 * 17 * 257
+
+@case("hash2_base_out_of_range", "hash2_base", src=RICH)
+def _(d):
+    struct.pack_into("<I", d, 68, 251)  # prime, but not > 2^8
+
+@case("hardlink_attr_index_nonzero", "(HARDLINK): attr_index", src=RICH)
+def _(d):
+    struct.pack_into("<H", d, cell(img.RICH_OBJ_LINK) + 2, 1)
+
+@case("hardlink_to_symlink", "is not a discovered FILE", src=RICH)
+def _(d):
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_LINK) + 4, img.RICH_OBJ_SYM)
+
+@case("fifo_data_off_nonzero", "(FIFO): data_off", src=RICH)
+def _(d):
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_FIFO) + 4, 4)
+
+@case("attr_ifmt_disagrees", "file-type bits disagree", src=RICH)
+def _(d):
+    struct.pack_into("<H", d, cell(img.RICH_ATTR_LNK) + 2, img.S_IFREG | 0o777)
+
+@case("empty_bucket_data_off_nonzero", "empty bucket data_off", src=RICH)
+def _(d):
+    struct.pack_into("<I", d, cell(rich_empty_bucket()) + 4, 1)
+
+@case("empty_bucket_bad_sentinel", "empty bucket next_index", src=RICH)
+def _(d):
+    struct.pack_into("<H", d, cell(rich_empty_bucket()) + 14, 0)
+
+@case("unused_cell_nonzero", "unused cell", src=RICH)
+def _(d):
+    d[cell(img.RICH_UNUSED) + 15] = 1
+
+@case("attr_unreferenced", "not referenced by root_attr", src=RICH)
+def _(d):
+    d[cell(img.RICH_UNUSED)] = img.TYPE_ATTR
+    struct.pack_into("<H", d, cell(img.RICH_UNUSED) + 2, img.S_IFREG | 0o400)
+
+@case("symlink_alias_of_shared_domain", "domains or announced lengths differ", src=RICH)
+def _(d):
+    # A symlink target must not alias a filename interval even with equal bytes.
+    public_name = struct.unpack_from("<I", d, cell(rich_bucket(b"pub.txt")) + 8)[0]
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_SYM) + 4, public_name)
+
+# ---- later revisions of the understood major ------------------------------
+
+def future_reserved_bytes(d):
+    """Every byte the format reserves as zero and a later revision may assign."""
+    set_version(d, 0x0102)
+    d[67] = 1                                                   # root_pad
+    d[76] = d[77] = 1                                           # header padding
+    d[78:128] = b"\xAA" * 50                                    # author
+    d[cell(img.RICH_ATTR_ROOT) + 1] = 1                         # ATTR.reserved0
+    struct.pack_into("<I", d, cell(img.RICH_ATTR_PUB) + 12, 4)  # ATTR.ext_off
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_PUB) + 12, 1)   # FILE.reserved_flags
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_SYM) + 12, 1)   # SYMLINK.reserved_flags
+    struct.pack_into("<III", d, cell(img.RICH_OBJ_FIFO) + 4, 1, 2, 3)  # FIFO words
+    struct.pack_into("<H", d, cell(img.RICH_OBJ_LINK) + 2, 7)   # HARDLINK.attr_index
+    struct.pack_into("<II", d, cell(img.RICH_OBJ_LINK) + 8, 1, 2)      # HARDLINK reserved
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_EMPTY) + 4, 9)  # bucket_first of empty DIR
+    realsize = struct.unpack_from("<I", d, cell(img.RICH_OBJ_PRIV) + 12)[0]
+    struct.pack_into("<I", d, cell(img.RICH_OBJ_PRIV) + 12, realsize | 1 << 31)  # DIR bit 31
+    d[cell(img.RICH_UNUSED) + 15] = 1                           # unused NULL cell
+    bucket = cell(rich_bucket(b"pub.txt"))
+    d[bucket + 1] = 1                                           # occupied bucket hash_p
+    struct.pack_into("<H", d, bucket + 2, 1)                    # occupied bucket attr_index
+    d[bucket + 12] = 1                                          # occupied bucket reserved
+    empty = cell(rich_empty_bucket())
+    d[empty + 1] = 1                                            # empty bucket hash_p
+    struct.pack_into("<H", d, empty + 2, 1)                     # empty bucket attr_index
+    struct.pack_into("<II", d, empty + 4, 1, 2)                 # empty bucket data_off, size
+    d[empty + 12] = d[empty + 13] = 1                           # empty reserved, name_len
+    meta_size = struct.unpack_from("<I", d, 48)[0]
+    private_off = struct.unpack_from("<I", d, 44)[0]
+    d[128 + meta_size] = 1                                      # metadata-to-content gap
+    d[private_off - 1] = 1                                      # public-part hole
+    d[-1] = 1                                                   # private-part hole
+
+@case("future_revision_clean", None, src=RICH)
+def _(d):
+    set_version(d, 0x0102)
+
+@case("future_revision_reserved_ignored", None, src=RICH)
+def _(d):
+    future_reserved_bytes(d)
+
+@case("future_revision_hash2_base_unused", None)
+def _(d):
+    set_version(d, 0x01FF)
+    struct.pack_into("<I", d, 68, 12345)  # unused without a DUAL directory
+
+@case("future_revision_hash_still_checked", "image_hash mismatch", src=RICH, rehash=False)
+def _(d):
+    set_version(d, 0x0102)
+    d[-1] = 1
+
+@case("future_revision_structure_still_checked", "does not exactly equal", src=RICH)
+def _(d):
+    set_version(d, 0x0102)
+    d[cell(rich_bucket(b"pipe"))] = img.TYPE_FILE
+
+@case("future_revision_name_len_still_checked", "name_len", src=RICH)
+def _(d):
+    set_version(d, 0x0102)
+    d[cell(rich_bucket(b"pipe")) + 13] = 3
+
+@case("future_revision_unknown_type_rejected", "unknown non-aux type 0x42", src=RICH)
+def _(d):
+    set_version(d, 0x0102)
+    d[cell(img.RICH_UNUSED)] = 0x42
+
+@case("future_revision_dedup_still_checked", "must use one interval", src=RICH)
+def _(d):
+    # Duplicate "pipe" into a public hole and repoint its bucket there.
+    set_version(d, 0x0102)
+    private_off = struct.unpack_from("<I", d, 44)[0]
+    dup = private_off - 8
+    d[dup:dup + 5] = b"pipe\0"
+    struct.pack_into("<I", d, cell(rich_bucket(b"pipe")) + 8, dup)
+    # Keep another reference on the original bytes: the file payload now matches.
+    pipe_off = d.find(b"pipe\0")
+    obj = cell(img.RICH_OBJ_PUB)
+    struct.pack_into("<II", d, obj + 4, pipe_off, 4)
 
 
 if __name__ == "__main__":
-    base = load()
     all_ok = True
-    for name, fn in cases.items():
-        d = bytearray(base)
-        d = fn(d)
-        ok = run(name, d)
-        all_ok = all_ok and ok
+    for name, (fn, expect, src, rehash) in cases.items():
+        d = load(src)
+        fn(d)
+        if rehash:
+            recompute_hashes(d)
+        all_ok = run(name, d, expect) and all_ok
     sys.exit(0 if all_ok else 1)

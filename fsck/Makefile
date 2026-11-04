@@ -15,7 +15,7 @@ CWARNINGS ?= -Wall -Wextra
 
 PYTHON ?= python3
 
-TEST_IMAGES = test_flat.0fs test_subdir.0fs
+TEST_IMAGES = test_flat.0fs test_subdir.0fs test_legacy.0fs test_rich.0fs
 
 .PHONY: all test clean
 
@@ -27,11 +27,15 @@ $(PROG): $(PROG).c
 test: $(PROG)
 	$(PYTHON) make_test_image.py flat test_flat.0fs
 	$(PYTHON) make_test_image.py subdir test_subdir.0fs
+	$(PYTHON) make_test_image.py legacy test_legacy.0fs
+	$(PYTHON) make_test_image.py rich test_rich.0fs
 	./$(PROG) test_flat.0fs
 	./$(PROG) test_subdir.0fs
+	./$(PROG) test_legacy.0fs
+	./$(PROG) test_rich.0fs
 	$(PYTHON) corrupt_tests.py
 
 clean:
-	rm -f $(PROG) $(TEST_IMAGES)
+	rm -f $(PROG) $(TEST_IMAGES) corrupt_*.0fs
 
 # END File: fsck/Makefile

@@ -18,7 +18,7 @@ EOF
 "$simulator" "$case_dir/list" 4096 --vm-page-size=4096 \
     --no-dual-hash-experiment --no-budgeted-hash-experiment > "$case_dir/report"
 
-grep -Eq '^  specification baseline: +0x0100$' "$case_dir/report"
+grep -Eq '^  specification baseline: +0x0101$' "$case_dir/report"
 grep -Eq '^  encoded page-size code: +4$' "$case_dir/report"
 grep -Eq '^  public_off: +4096$' "$case_dir/report"
 grep -Eq '^  private_off: +12288$' "$case_dir/report"
@@ -42,7 +42,7 @@ grep -Eq '^  leaking guaranteed-aligned: +0$' "$case_dir/large-vm-report"
 "$simulator" "$case_dir/list" 256 --vm-page-size=4096 \
     --no-dual-hash-experiment --no-budgeted-hash-experiment > "$case_dir/future-page-report"
 grep -Eq '^  encoded page-size code: +0$' "$case_dir/future-page-report"
-grep -Fq 'future-format experiment, not a valid 0x0100 image model' \
+grep -Fq 'future-format experiment, not a valid 0x0101 image model' \
     "$case_dir/future-page-report"
 
 sed -n '1p' "$case_dir/list" > "$case_dir/root-only-list"

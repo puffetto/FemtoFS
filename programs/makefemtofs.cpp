@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fcntl.h>
 #include <iostream>
@@ -70,6 +71,13 @@ public:
 }
 
 struct Options {
+    Options()
+    {
+        if (::clock_gettime(CLOCK_REALTIME, &started) != 0)
+            throw Error("cannot read build-start clock");
+    }
+    timespec started{};
+    bool checkInputTimes = std::getenv("SOURCE_DATE_EPOCH") == nullptr;
     bool force = false;
     bool device = false;
     bool dryRun = false;
@@ -96,6 +104,33 @@ struct Options {
     message += ": ";
     message += std::strerror(errno);
     return message;
+}
+
+void checkInputTime(const Options& options, int64_t seconds, long nanoseconds,
+                    const std::string& path, std::string_view field)
+{
+    if (options.checkInputTimes &&
+        (seconds > options.started.tv_sec ||
+         (seconds == options.started.tv_sec && nanoseconds > options.started.tv_nsec))) {
+        throw Error(path + ": " + std::string(field) + " later than build start (" +
+                    std::to_string(seconds) + "s + " + std::to_string(nanoseconds) +
+                    "ns > " + std::to_string(options.started.tv_sec) + "s + " +
+                    std::to_string(options.started.tv_nsec) + "ns)");
+    }
+}
+
+void checkInputStatTimes(const Options& options, const struct stat& status,
+                         const std::string& path)
+{
+#ifdef __APPLE__
+    const auto& mtime = status.st_mtimespec;
+    const auto& ctime = status.st_ctimespec;
+#else
+    const auto& mtime = status.st_mtim;
+    const auto& ctime = status.st_ctim;
+#endif
+    checkInputTime(options, mtime.tv_sec, mtime.tv_nsec, path, "mtime");
+    checkInputTime(options, ctime.tv_sec, ctime.tv_nsec, path, "ctime");
 }
 
 [[nodiscard]] uint32_t parseU32(std::string_view text, int base,
@@ -186,7 +221,7 @@ void printUsage(std::ostream& out)
             std::exit(0);
         }
         if (arg == "-V" || arg == "--version") {
-            std::cout << "makefemtofs 0.1 (FemtoFS 0x0100)\n";
+            std::cout << "makefemtofs 0.1 (FemtoFS 0x0101)\n";
             std::exit(0);
         }
         if (arg == "-f" || arg == "--force") {
@@ -698,12 +733,19 @@ void checkArchiveStatus(struct archive* input, int status,
         throw Error(Spool::archiveMessage(input, operation));
 }
 
-[[nodiscard]] Node nodeFromEntry(struct archive* input,
+[[nodiscard]] Node nodeFromEntry(const Options& options, struct archive* input,
                                  struct archive_entry* entry,
                                  std::string normalizedPath,
                                  Spool& spool,
                                  bool canSkipData)
 {
+    const std::string displayPath = normalizedPath.empty() ? options.input : normalizedPath;
+    if (archive_entry_mtime_is_set(entry))
+        checkInputTime(options, archive_entry_mtime(entry), archive_entry_mtime_nsec(entry),
+                       displayPath, "mtime");
+    if (archive_entry_ctime_is_set(entry))
+        checkInputTime(options, archive_entry_ctime(entry), archive_entry_ctime_nsec(entry),
+                       displayPath, "ctime");
     const mode_t fileType = archive_entry_filetype(entry);
     const char* hardlinkTarget = archive_entry_hardlink(entry);
     Node node;
@@ -805,7 +847,7 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
         if (path.empty()) {
             if (!isDirectory)
                 throw Error("non-directory archive entry maps to image root");
-            Node root = nodeFromEntry(input.get(), entry, {}, spool, true);
+            Node root = nodeFromEntry(options, input.get(), entry, {}, spool, true);
             tree.ignoredMetadata += root.ignoredMetadata;
             if (tree.hasRootAttr)
                 throw Error("archive contains duplicate root directory entries");
@@ -814,7 +856,7 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
             continue;
         }
 
-        Node node = nodeFromEntry(input.get(), entry, path, spool, true);
+        Node node = nodeFromEntry(options, input.get(), entry, path, spool, true);
         tree.ignoredMetadata += node.ignoredMetadata;
         if (!node.explicitHardlink.empty()) {
             node.explicitHardlink = normalizeArchivePath(
@@ -881,7 +923,7 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
                         raw);
         }
         relative = normalizeArchivePath(relative, isDirectory, 0);
-        Node node = nodeFromEntry(input.get(), entry, relative, spool, false);
+        Node node = nodeFromEntry(options, input.get(), entry, relative, spool, false);
         tree.ignoredMetadata += node.ignoredMetadata;
         if (relative.empty()) {
             tree.rootAttr = node.attr;
@@ -896,14 +938,23 @@ using ArchivePtr = std::unique_ptr<struct archive, decltype(&archive_read_free)>
     checkArchiveStatus(input.get(), archive_read_close(input.get()),
                        "closing input directory");
 
+    if (options.checkInputTimes) {
+        struct stat rootStatus{};
+        if (::lstat(options.input.c_str(), &rootStatus) != 0)
+            throw Error(errnoText("recheck input root", options.input));
+        checkInputStatTimes(options, rootStatus, options.input);
+    }
     for (const Node& node : tree.nodes) {
-        if (node.kind != NodeKind::file || !node.payload)
+        if (!options.checkInputTimes && (node.kind != NodeKind::file || !node.payload))
             continue;
         const std::filesystem::path source =
             std::filesystem::path(options.input) / node.path;
         struct stat current{};
         if (::lstat(source.c_str(), &current) != 0)
             throw Error(errnoText("recheck input file", source.string()));
+        checkInputStatTimes(options, current, node.path);
+        if (node.kind != NodeKind::file || !node.payload)
+            continue;
         if (!S_ISREG(current.st_mode) ||
             static_cast<int64_t>(current.st_dev) != node.identity.device ||
             static_cast<int64_t>(current.st_ino) != node.identity.inode ||
@@ -1923,10 +1974,24 @@ void encodeHeader(ImagePlan& plan, const Options& options)
         (root.hash.dual ? femtofs::kHashModeDual << femtofs::kHashModeShift : 0);
     femtofs::store32(plan.header, 68, plan.hash2Base);
 
+    // SOURCE_DATE_EPOCH is in Unix seconds; the on-disk field uses the leap epoch.
+    int64_t created = static_cast<int64_t>(options.started.tv_sec);
+    if (const char* sourceDate = std::getenv("SOURCE_DATE_EPOCH")) {
+        const std::string_view text(sourceDate);
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), created);
+        if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+            throw Error("invalid SOURCE_DATE_EPOCH");
+    }
+    if (created < static_cast<int64_t>(femtofs::kLeapEpoch) ||
+        static_cast<uint64_t>(created) - femtofs::kLeapEpoch > UINT32_MAX)
+        throw Error("image creation time is outside the leap epoch range");
+    femtofs::store32(plan.header, 72,
+        static_cast<uint32_t>(created - femtofs::kLeapEpoch));
+
     constexpr std::string_view author =
         "Andrea \"Nemesi\" Cocito - blackye at gmail dot com";
     static_assert(author.size() == 49);
-    std::copy(author.begin(), author.end(), plan.header.begin() + 72);
+    std::copy(author.begin(), author.end(), plan.header.begin() + 78);
 }
 
 void validatePlan(const ImagePlan& plan)
@@ -2548,6 +2613,7 @@ int main(int argc, char** argv)
         struct stat inputStatus{};
         if (::lstat(options.input.c_str(), &inputStatus) != 0)
             throw Error(errnoText("lstat input", options.input));
+        checkInputStatTimes(options, inputStatus, options.input);
         if (!S_ISDIR(inputStatus.st_mode) && !S_ISREG(inputStatus.st_mode))
             throw Error("input must be a directory or regular archive file");
         if (!options.dryRun)
@@ -2557,6 +2623,15 @@ int main(int argc, char** argv)
         InputTree tree = S_ISDIR(inputStatus.st_mode)
             ? readDirectory(options, spool)
             : readArchive(options, spool);
+        if (S_ISREG(inputStatus.st_mode) && options.checkInputTimes) {
+            struct stat current{};
+            if (::lstat(options.input.c_str(), &current) != 0)
+                throw Error(errnoText("recheck input archive", options.input));
+            checkInputStatTimes(options, current, options.input);
+            if (current.st_dev != inputStatus.st_dev || current.st_ino != inputStatus.st_ino ||
+                current.st_mode != inputStatus.st_mode || current.st_size != inputStatus.st_size)
+                throw Error("input archive changed while being read: " + options.input);
+        }
         if (tree.ignoredMetadata != 0) {
             std::cerr << "makefemtofs: warning: ignored unrepresentable metadata on "
                       << tree.ignoredMetadata << " input entr"

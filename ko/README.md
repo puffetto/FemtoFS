@@ -75,8 +75,9 @@ boot
 
 Stock rc defaults `root_rw_mount` to `YES` and aborts startup when its
 `mount -uw /` fails. A FemtoFS root must set `root_rw_mount="NO"` in
-`/etc/rc.conf`. Every vnode timestamp is the Unix epoch by format design, so
-timestamp-driven tools such as `make` and `find -newer` see an epoch tree.
+`/etc/rc.conf`. Revision `0x0101` exposes the image creation time for every vnode timestamp
+(seconds since the leap epoch, 2017-01-01 UTC). Revision `0x0100` images retain
+Unix-epoch timestamps. Per-file chronology is not stored.
 
 A persistent installation can encode the same setup in `loader.conf`:
 

@@ -25,16 +25,25 @@ validation, safe output publication, mounted lookup performance, and final
 image size take priority over build latency. Construction efficiency remains
 important, but it is not a primary design objective.
 
+The default image creation time is captured at startup, before input is read.
+Without `SOURCE_DATE_EPOCH`, available input mtime/ctime values newer than this
+full-resolution cutoff abort the build, with path and offending timestamp.
+The check covers tree entries, archive headers and the source archive itself,
+and repeats against the tree and archive file after reading. Clock skew on NFS
+may cause rejection; this is acceptable. It is a weak mutation guard, not a
+snapshot. `SOURCE_DATE_EPOCH` disables it while retaining the independent
+regular-file identity/size/mode/ownership recheck.
+
 ## 2. Format contract used by the builder
 
 The builder targets the format in `specification.md`, short semantic version
-`0x0100` (major 1, revision 0). The header records the exact filesystem length
+`0x0101` (major 1, revision 1). The header records the exact filesystem length
 directly:
 
 ```c
 uint8_t  magic[4];
 uint8_t  format[2];  /* { byte order, page shift minus 8 } = {0, 4} */
-uint16_t version;    /* 0x0100 */
+uint16_t version;    /* 0x0101 */
 uint32_t image_hash;
 uint32_t meta_hash;
 uint32_t uuid[4];
@@ -76,9 +85,10 @@ include the stored `meta_hash`. The two values have no circular dependency and
 can be computed independently. The 32-byte fingerprint is suitable for fast
 same-image comparison, but not for cryptographic authentication.
 
-The builder writes the exact fixed `author[56]` identifier, zeroes `root_pad`,
-and writes `hash2_base == 0` unless at least one directory uses dual-hash mode.
-Every attribute has `ext_off == 0`; version `0x0100` does not define metadata-
+The builder writes the fixed `author[50]` identifier at offset 78, the leap-epoch
+creation time at offset 72 and two zero padding bytes at offset 76. It zeroes
+`root_pad` and writes `hash2_base == 0` unless a directory uses dual-hash mode.
+Every attribute has `ext_off == 0`; version `0x0101` does not define metadata-
 extension payloads. A future major-1 revision may define them without a major-
 version bump: older major-1 consumers ignore unknown extension metadata and
 continue to use classic `mode`, `uid`, and `gid` semantics.
@@ -340,8 +350,9 @@ filesystem snapshot and cannot detect every mutation.
 
 ## 7. Planning the image
 
-Planning is deterministic apart from the default random UUID. With the same
-tree, options, tool version, and explicit `--uuid`, directory and archive input
+Planning is deterministic apart from the default random UUID and creation time.
+Set `SOURCE_DATE_EPOCH` (Unix seconds) to fix the image creation time. With the same
+tree, options, tool version, and explicit `--uuid` and fixed `SOURCE_DATE_EPOCH`, directory and archive input
 representing the same metadata produce identical bytes.
 
 ### Tree and object indices

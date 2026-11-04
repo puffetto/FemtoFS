@@ -52,9 +52,8 @@ static int zero(const uint8_t *p, size_t n)
 
 int ff_header(const uint8_t *h, uint64_t capacity, struct ff_image *im)
 {
-    static const char author[56] = "Andrea \"Nemesi\" Cocito - blackye at gmail dot com";
-    if (capacity < 128 || memcmp(h, "0FS\0\0\4", 6) || h[7] != 1 ||
-        memcmp(h + 72, author, 56) || h[67]) return EINVAL;
+    if (capacity < 128 || memcmp(h, "0FS\0\0\4", 6) || h[7] != 1) return EINVAL;
+    im->creation_time = h[6] == 0 ? 0 : UINT64_C(1483228800) + ff_u32(h + 72);
     im->size = ff_u32(h + 32);
     im->count = ff_u32(h + 36);
     im->public_off = ff_u32(h + 40);
@@ -206,10 +205,10 @@ int ff_validate(struct ff_image *im)
             const uint8_t *nul;
             if (p[0] == FF_ATTR) continue;
             if (!p[0]) {
-                if (!zero(p, 14) || ff_u16(p + 14) != d->size) goto out;
+                if (ff_u16(p + 14) != d->size) goto out;
                 continue;
             }
-            if (!occupied(p) || p[1] || ff_u16(p + 2) || p[12]) goto out;
+            if (!occupied(p)) goto out;
             entries++;
             target = ff_u32(p + 4); nameoff = ff_u32(p + 8);
             if (target >= im->count || w[target].slice || w[target].object) goto out;
@@ -225,14 +224,11 @@ int ff_validate(struct ff_image *im)
             n->names = d->names && (n->mode & 5) == 5;
             if (n->type == FF_DIR) {
                 uint32_t packed = ff_u32(o + 12);
-                if ((packed & 0x80000000) || (packed & 65535) != (id == im->count ? 65535 : id)) goto out;
-                n->entries = packed >> 16; n->links = 2; d->links++;
+                if ((packed & 65535) != (id == im->count ? 65535 : id)) goto out;
+                n->entries = (packed >> 16) & 0x7fff; n->links = 2; d->links++;
                 queue[nq++] = target;
-            } else {
-                if (ff_u32(o + 12)) goto out;
-                if (n->type == FF_FIFO && (n->off || n->size)) goto out;
-                if (n->type == FF_LINK && (ff_u16(o + 2) || n->size)) goto out;
             }
+            if (n->type == FF_FIFO) n->off = n->size = 0;
             if (nameoff < im->public_off || nameoff >= im->size) goto out;
             end = nameoff < im->private_off ? im->private_off : im->size;
             length = end - nameoff < 256 ? end - nameoff : 256;
@@ -250,16 +246,16 @@ int ff_validate(struct ff_image *im)
     if (dual) {
         if (im->hash2 <= 256 || im->hash2 >= (1u << 24)) goto out;
         for (i = 2; i <= im->hash2 / i; i++) if (!(im->hash2 % i)) goto out;
-    } else if (im->hash2) goto out;
+    }
     qsort(names, nnames, sizeof(*names), namecmp);
     for (i = 1; i < nnames; i++) if (!namecmp(&names[i-1], &names[i])) goto out;
     for (i = 0; i < im->count; i++) {
         struct ff_node *n = &im->nodes[i];
         const uint8_t *p = cell(im, i);
         if (p[0] == FF_ATTR) {
-            if (!w[i].attr || p[1] || (h[6] == 0 && ff_u32(p + 12))) goto out;
+            if (!w[i].attr) goto out;
             attrs[nattr++] = p;
-        } else if (!w[i].slice && !w[i].object && !zero(p, 16)) goto out;
+        } else if (!w[i].slice && !w[i].object && p[0]) goto out;
         if (!n->type) continue;
         if (n->type == FF_LINK) {
             if (n->off >= im->count || im->nodes[n->off].type != FF_FILE) goto out;
