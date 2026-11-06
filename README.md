@@ -315,6 +315,10 @@ output.
 See [BOOTING.md](BOOTING.md) for image preparation, bootloader settings,
 read-only root configuration, and verified boot results.
 
+## License
+
+FemtoFS is licensed under the [BSD 2-Clause License](LICENSE).
+
 ## Pitch In One Sentence
 
 `FemtoFS` is the filesystem for people who want immutable images to mount fast,
