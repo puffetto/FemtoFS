@@ -1,0 +1,78 @@
+.\" File: man/mount_femtofs.8
+.\" Created by Andrea "Nemesi" Cocito on 08/11/2026
+.\" FemtoFS mount helper manual.
+.Dd November 8, 2026
+.Dt MOUNT_FEMTOFS 8
+.Os
+.Sh NAME
+.Nm mount_femtofs
+.Nd mount a resident FemtoFS bank
+.Sh SYNOPSIS
+.Nm
+.Op Fl o Ar options
+.Ar label directory
+.Sh DESCRIPTION
+The
+.Nm
+utility mounts an existing resident bank at
+.Ar directory ,
+which must already exist.
+Load the module and populate the bank with the boot loader or
+.Xr femtoctl 8
+first.
+The
+.Ar label
+is a bank name, not an image or device pathname.
+Mounting requires root privileges.
+.Pp
+The filesystem is always mounted read-only.
+Only one independent mount may claim each bank.
+Unmount with
+.Xr umount 8 ;
+the bank remains available until explicitly discarded.
+.Pp
+The options are:
+.Bl -tag -width "-o options"
+.It Fl o Ar options
+Comma-separated mount options; may be repeated.
+The mutually exclusive
+.Cm clean
+(default) and
+.Cm leaking
+options control page-tail exposure as described in
+.Xr femtofs 5 .
+Generic read-only mount options such as
+.Cm ro , noexec , nosuid
+are also accepted.
+The helper rejects
+.Cm bank
+and
+.Cm from
+options because the positional label supplies the bank selector.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+.Bd -literal -offset indent
+kldload femtofs
+femtoctl add data /path/to/data.0fs
+mount_femtofs -o ro,clean data /mnt
+umount /mnt
+femtoctl discard data
+.Ed
+.Pp
+An equivalent
+.Pa /etc/fstab
+entry, after bank registration, is:
+.Bd -literal -offset indent
+data /mnt femtofs ro,clean 0 0
+.Ed
+.Sh SEE ALSO
+.Xr femtofs 5 ,
+.Xr fstab 5 ,
+.Xr femtoctl 8 ,
+.Xr mount 8 ,
+.Xr umount 8
+.Sh AUTHORS
+.An Andrea "Nemesi" Cocito
+.\" END File: man/mount_femtofs.8

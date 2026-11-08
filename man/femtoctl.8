@@ -1,0 +1,82 @@
+.\" File: man/femtoctl.8
+.\" Created by Andrea "Nemesi" Cocito on 08/11/2026
+.\" FemtoFS resident-bank administration manual.
+.Dd November 8, 2026
+.Dt FEMTOCTL 8
+.Os
+.Sh NAME
+.Nm femtoctl
+.Nd administer resident FemtoFS image banks
+.Sh SYNOPSIS
+.Nm
+.Cm list
+.Nm
+.Cm add
+.Ar label path
+.Nm
+.Cm discard
+.Ar label
+.Sh DESCRIPTION
+The
+.Nm
+utility administers banks through
+.Pa /dev/femtofs .
+The kernel module must be loaded and the caller must have root privileges.
+Labels contain 1 to 63 ASCII letters, digits, underscores or hyphens.
+.Bl -tag -width "discard label"
+.It Cm list
+Print a tab-separated table with columns
+.Dv LABEL , ORIGIN , BYTES , ALLOCATED , STATE , UUID , SUPPLIED_SOURCE .
+Origin is
+.Cm loader
+for adopted preload memory or
+.Cm copy
+for imported images.
+Sizes distinguish logical image bytes from allocated backing bytes.
+State is
+.Cm claimed
+or
+.Cm available .
+The source column is the supplied name or path string, not a persistent
+reference to the source object.
+.It Cm add Ar label path
+Synchronously copy the complete image from a regular file or readable,
+seekable character device into wired RAM, validate it, and publish the bank.
+The label must be unused.
+GEOM disk sources are supported when their read alignment is compatible.
+Keep the source unchanged throughout import for a coherent snapshot.
+The source is released after import; later changes or device removal cannot
+affect the bank.
+An allocation failure reports an out-of-memory error.
+Asynchronous import is not implemented.
+.It Cm discard Ar label
+Release an unmounted bank and its metadata.
+Discarding a claimed bank fails as busy.
+A discarded loader bank cannot be mounted again unless populated anew.
+Discard every bank before unloading the kernel module.
+.El
+.Sh FILES
+.Bl -tag -width /dev/femtofs
+.It Pa /dev/femtofs
+Administrator-only ioctl endpoint.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+.Bd -literal -offset indent
+femtoctl add data /path/to/data.0fs
+femtoctl list
+mount_femtofs -o clean data /mnt
+umount /mnt
+femtoctl discard data
+kldunload femtofs
+.Ed
+.Sh SEE ALSO
+.Xr femtofs 5 ,
+.Xr kldload 8 ,
+.Xr kldunload 8 ,
+.Xr makefemtofs 8 ,
+.Xr mount_femtofs 8
+.Sh AUTHORS
+.An Andrea "Nemesi" Cocito
+.\" END File: man/femtoctl.8

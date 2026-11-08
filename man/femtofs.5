@@ -1,0 +1,134 @@
+.\" File: man/femtofs.5
+.\" Created by Andrea "Nemesi" Cocito on 08/11/2026
+.\" FemtoFS resident-bank filesystem manual.
+.Dd November 8, 2026
+.Dt FEMTOFS 5
+.Os
+.Sh NAME
+.Nm femtofs
+.Nd immutable resident-bank filesystem
+.Sh SYNOPSIS
+.Cd "kldload femtofs"
+.Sh DESCRIPTION
+The
+.Nm
+kernel module mounts immutable images created by
+.Xr makefemtofs 8 .
+Images reside in named banks of wired RAM.
+The boot loader can supply banks without a second full-image copy;
+.Xr femtoctl 8
+can import files or devices by copying their contents into RAM.
+Mounts select a bank label, never a device pathname.
+Labels contain 1 to 63 ASCII letters, digits, underscores or hyphens.
+.Pp
+Each bank permits one independent mount.
+Unmounting releases mount caches but retains the bank and decoded metadata.
+Discard unmounted banks with
+.Xr femtoctl 8
+before unloading the module.
+Administration and mounting require root privileges, even when
+.Va vfs.usermount
+is enabled.
+.Ss Mapping modes
+The filesystem is always read-only.
+Eligible memory mappings alias resident image pages.
+Private writable mappings use copy-on-write and cannot change bank contents;
+shared writable mappings are rejected.
+The following mutually exclusive mount options select page-tail behavior:
+.Bl -tag -width leaking
+.It Cm clean
+The default.
+Pages requiring cleanup are copied lazily into a per-mount cache,
+with bytes outside the file zero-filled.
+.It Cm leaking
+Allow mappings to expose adjacent public payload bytes in image pages.
+Private payloads retain clean behavior.
+Larger VM pages and active MAC policies force clean behavior.
+.El
+.Pp
+Writable mounts, forced unmounts and asynchronous imports are unsupported.
+.Ss Boot configuration
+An example
+.Pa /boot/loader.conf
+configuration is:
+.Bd -literal -offset indent
+femtofs_load="YES"
+root_load="YES"
+root_type="femtofs_image"
+root_name="/boot/root.0fs"
+femtofs.bank.root="/boot/root.0fs"
+vfs.root.mountfrom="femtofs:"
+vfs.root.mountfrom.options="ro,clean,bank=root"
+.Ed
+.Pp
+The
+.Va femtofs.bank.
+variables map labels to exact loader-recorded image names at module initialization.
+Preload names must be unique and cannot be registered under multiple labels.
+The distinct
+.Cm femtofs_image
+preload type avoids creating a writable md frontend.
+Additional banks use additional label-to-image mappings.
+.Pp
+A read-only root requires
+.Va root_rw_mount="NO"
+in
+.Pa /etc/rc.conf ,
+writable storage for runtime state, and provisioned host identity and SSH keys.
+Use fsck pass 0 in
+.Pa /etc/fstab ;
+for example:
+.Bd -literal -offset indent
+root / femtofs ro,clean 0 0
+.Ed
+.Pp
+The root mapping mode must agree with the loader options.
+Alternatively, specify only
+.Cm ro
+in the root fstab entry.
+.Ss Accounting
+Read-only counters are available under
+.Va vfs.femtofs :
+.Bl -tag -width loader_released_pages
+.It Va loader_bytes , imported_bytes
+Retained allocation bytes by bank origin, including unmounted banks.
+.It Va loader_image_bytes , imported_image_bytes
+Logical image bytes by bank origin.
+.It Va metadata_bytes
+Decoded node and blob allocation bytes.
+.It Va clean_bytes
+Live wired clean-page cache bytes.
+.It Va clean_pages
+Clean pages populated since module load.
+.It Va direct_faults , loader_faults
+Pager faults aliasing bank pages: all origins and loader banks respectively.
+.It Va loader_released_pages
+Preload pages passed to stock reclamation since module load.
+.El
+.Sh FILES
+.Bl -tag -width /boot/modules/femtofs.ko
+.It Pa /boot/modules/femtofs.ko
+Installed kernel module.
+.It Pa /dev/femtofs
+Administrator-only bank-control endpoint; not an image device.
+.El
+.Sh SEE ALSO
+.Xr fstab 5 ,
+.Xr loader.conf 5 ,
+.Xr femtoctl 8 ,
+.Xr kldload 8 ,
+.Xr makefemtofs 8 ,
+.Xr mount_femtofs 8 ,
+.Xr sysctl 8
+.Sh NOTES
+The current native target is FreeBSD 15.1 amd64.
+Revision 0x0101 uses the image creation time for every vnode timestamp,
+with seconds measured from January 1, 2017 UTC.
+Revision 0x0100 uses Unix-epoch timestamps.
+Per-file chronology is not stored.
+.Pp
+Image hashes detect accidental corruption; they do not authenticate images.
+Validate the source's authenticity separately.
+.Sh AUTHORS
+.An Andrea "Nemesi" Cocito
+.\" END File: man/femtofs.5

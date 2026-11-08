@@ -290,6 +290,25 @@ Or build the programs with BSD make:
 bsdmake -C programs
 ```
 
+On FreeBSD, build and install the kernel module and runtime utilities with
+the repository's top-level Makefile (use sources matching the target kernel):
+
+```sh
+make native
+sudo make install
+```
+
+The default destinations are `/boot/modules/femtofs.ko`, `/usr/sbin` for
+`makefemtofs`, `mount_femtofs` and `femtoctl`, and `/usr/share/man/man5` and
+`/usr/share/man/man8` for their manuals. The simulator and independent test
+checker are not installed. Installation does not load the module.
+`DESTDIR` stages an installation; `KMODDIR`, `BINDIR` and `MANDIR` override
+the destination paths. For example, `make install DESTDIR="$PWD/stage"`.
+Native builds accept the usual FreeBSD make variables such as `SYSDIR`.
+
+Manuals: [femtofs(5)](man/femtofs.5), [makefemtofs(8)](man/makefemtofs.8),
+[mount_femtofs(8)](man/mount_femtofs.8), and [femtoctl(8)](man/femtoctl.8).
+
 Create an image from a directory or archive:
 
 ```sh

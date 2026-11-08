@@ -1,0 +1,125 @@
+.\" File: man/makefemtofs.8
+.\" Created by Andrea "Nemesi" Cocito on 08/11/2026
+.\" FemtoFS image builder manual.
+.Dd November 8, 2026
+.Dt MAKEFEMTOFS 8
+.Os
+.Sh NAME
+.Nm makefemtofs
+.Nd build and verify an immutable FemtoFS image
+.Sh SYNOPSIS
+.Nm
+.Op Ar options
+.Op Cm --
+.Ar input output
+.Sh DESCRIPTION
+The
+.Nm
+utility builds one raw FemtoFS image from a directory tree or a non-mtree
+archive supported by libarchive.
+The input must remain unchanged throughout construction.
+Regular-file output is verified before publication;
+existing files require explicit replacement authorization.
+Output symlinks and output paths inside the input tree are rejected.
+.Pp
+The image stores ownership and permissions but ignores source ACLs,
+extended attributes and file flags.
+It stores an image-wide creation time rather than per-file timestamps.
+Raw mtree/METALOG input and archives containing no entries are rejected.
+.Sh OPTIONS
+.Bl -tag -width "--strip-components N"
+.It Fl f , Fl -force
+Replace an existing regular output file.
+.It Fl -device
+Authorize destructive output to an existing block or character device.
+Implemented only on FreeBSD.
+The device must be unmounted, large enough for the image, and have a sector
+size dividing 4096.
+The image header is committed after image data is written and flushed.
+Failure can leave the previous device contents destroyed or invalid.
+.It Fl -dry-run
+Read input, plan and validate without writing an output image.
+Temporary payload spooling may still occur.
+.It Fl -strip-components Ar N
+Remove
+.Ar N
+leading archive path components.
+Reject a non-directory entry if this removes its entire path.
+.It Fl -synthesize-dirs
+Create parent directories omitted from an archive.
+.It Fl -root-mode Ar octal
+Override or supply root directory permissions, at most 07777.
+.It Fl -root-uid Ar uid
+Override or supply the numeric root directory owner.
+.It Fl -root-gid Ar gid
+Override or supply the numeric root directory group.
+.It Fl -traverse-mounts
+Cross filesystem boundaries when reading a directory tree.
+By default, do not cross them.
+.It Fl -uuid Ar uuid
+Use a fixed UUID in canonical 8-4-4-4-12 hexadecimal form.
+Otherwise generate a UUID.
+Combine with
+.Ev SOURCE_DATE_EPOCH
+and unchanged inputs for reproducible images.
+.It Fl -temp-dir Ar directory
+Use this directory for temporary payload spooling.
+.It Fl -verify Ar mode
+Select
+.Cm full
+(default) or
+.Cm structure
+verification.
+Both check the header, metadata, metadata hash and stored payloads;
+.Cm full
+also checks the whole-image hash, exact deduplication and zero-filled holes.
+.It Fl v , Fl -verbose
+Print planning statistics and completion information.
+.It Fl V , Fl -version
+Print the program and image-format versions, then exit.
+.It Fl h , Fl -help
+Print usage, then exit.
+.It Cm --
+End option processing; subsequent arguments are input and output paths.
+.El
+.Pp
+Options taking values require a separate argument.
+.Sh ENVIRONMENT
+.Bl -tag -width SOURCE_DATE_EPOCH
+.It Ev SOURCE_DATE_EPOCH
+Image creation time in Unix seconds, converted to the format's epoch
+of January 1, 2017 UTC.
+The value must fit the image timestamp range.
+When unset, use the current build time and reject input timestamps later
+than build start.
+Setting this variable disables that input-time check.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+.Bd -literal -offset indent
+makefemtofs root-directory root.0fs
+makefemtofs root.tar.zst root.0fs
+makefemtofs --dry-run --verbose root-directory root.0fs
+.Ed
+.Pp
+Convert a FreeBSD METALOG into an archive carrying payloads first:
+.Bd -literal -offset indent
+bsdtar -cf root.tar @METALOG
+makefemtofs root.tar root.0fs
+.Ed
+.Sh SEE ALSO
+.Xr tar 1 ,
+.Xr archive 3 ,
+.Xr femtofs 5 ,
+.Xr femtoctl 8 ,
+.Xr mount_femtofs 8
+.Sh AUTHORS
+.An Andrea "Nemesi" Cocito
+.Sh CAVEATS
+Concurrent source modification is not fully detected; use a quiescent tree
+or snapshot.
+An archive truncated cleanly between entries can be accepted by archive readers.
+Verify archive completeness and authenticity separately when required.
+Image hashes detect accidental corruption, not malicious modification.
+.\" END File: man/makefemtofs.8
