@@ -26,6 +26,9 @@ is a bank name, not an image or device pathname.
 Mounting requires root privileges.
 .Pp
 The filesystem is always mounted read-only.
+The
+.Cm ro
+option is implicit and need not be specified.
 Only one independent mount may claim each bank.
 Unmount with
 .Xr umount 8 ;
@@ -56,7 +59,7 @@ options because the positional label supplies the bank selector.
 .Bd -literal -offset indent
 kldload femtofs
 femtoctl add data /path/to/data.0fs
-mount_femtofs -o ro,clean data /mnt
+mount_femtofs -o clean data /mnt
 umount /mnt
 femtoctl discard data
 .Ed
