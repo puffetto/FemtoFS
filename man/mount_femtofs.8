@@ -25,10 +25,19 @@ The
 is a bank name, not an image or device pathname.
 Mounting requires root privileges.
 .Pp
-The filesystem is always mounted read-only.
+Only read-only mounts are supported.
 The
 .Cm ro
 option is implicit and need not be specified.
+An explicit writable request
+.Pq Fl o Cm rw
+fails with
+.Er EROFS
+.Pq Dq Read-only file system ,
+both for an initial mount and for a remount.
+The equivalent
+.Cm noro
+option is also rejected.
 Only one independent mount may claim each bank.
 Unmount with
 .Xr umount 8 ;

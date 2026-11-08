@@ -81,6 +81,15 @@ try:
     unit = subprocess.check_output(['mdconfig', '-a', '-t', 'vnode', '-f', str(empty_image)]).decode().strip()
     assert unit.startswith('md') and unit[2:].isdigit()
     run(ctl, 'add', label, '/dev/'+unit); banked = True
+    # Reject writable initial mounts without claiming the bank; ro is optional.
+    for command in ([str(helper), '-o', 'rw', label, str(mountpoint)],
+                    [str(helper), '-o', 'noro', label, str(mountpoint)],
+                    ['mount', '-t', 'femtofs', '-o', 'rw', label, str(mountpoint)]):
+        bad = subprocess.run(command, capture_output=True)
+        if bad.returncode == 0:
+            mounted = True
+            raise AssertionError(f'writable initial mount was accepted: {command}')
+        assert b'Read-only file system' in bad.stderr, bad.stderr
     run(helper, label, mountpoint); mounted = True
     assert list(mountpoint.iterdir()) == [] and mountpoint.stat().st_nlink == 2
     raw_header = empty_image.read_bytes()[:128]

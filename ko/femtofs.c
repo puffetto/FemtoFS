@@ -524,6 +524,11 @@ static int ff_mount(struct mount *mp)
         vfs_mount_error(mp, "unsupported mount option");
         return EINVAL;
     }
+    if (vfs_flagopt(mp->mnt_optnew, "rw", NULL, 0) ||
+        vfs_flagopt(mp->mnt_optnew, "noro", NULL, 0)) {
+        vfs_mount_error(mp, "FemtoFS supports only read-only mounts");
+        return EROFS;
+    }
     if (vfs_flagopt(mp->mnt_optnew, "clean", NULL, 0) &&
         vfs_flagopt(mp->mnt_optnew, "leaking", NULL, 0)) {
         vfs_mount_error(mp, "clean and leaking are mutually exclusive");

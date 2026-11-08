@@ -31,6 +31,16 @@ Administration and mounting require root privileges, even when
 is enabled.
 .Ss Mapping modes
 The filesystem is always read-only.
+The
+.Cm ro
+mount option is implicit.
+Explicit
+.Cm rw
+or
+.Cm noro
+requests fail with
+.Er EROFS ,
+including on an initial mount.
 Eligible memory mappings alias resident image pages.
 Private writable mappings use copy-on-write and cannot change bank contents;
 shared writable mappings are rejected.
