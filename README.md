@@ -305,6 +305,8 @@ checker are not installed. Installation does not load the module.
 `DESTDIR` stages an installation; `KMODDIR`, `BINDIR` and `MANDIR` override
 the destination paths. For example, `make install DESTDIR="$PWD/stage"`.
 Native builds accept the usual FreeBSD make variables such as `SYSDIR`.
+A relative `SYSDIR` is resolved from the top-level FemtoFS directory before
+entering `ko/`; for example, `make install SYSDIR=../src/sys/`.
 
 Manuals: [femtofs(5)](man/femtofs.5), [makefemtofs(8)](man/makefemtofs.8),
 [mount_femtofs(8)](man/mount_femtofs.8), and [femtoctl(8)](man/femtoctl.8).
